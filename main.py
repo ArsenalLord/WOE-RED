@@ -34,8 +34,8 @@ else:
     eventos = {}
 
 CLASSES_FIXAS = [
-    "Shura", "RK", "RG", "GX", "AB", "Musa", "Trovador",
-    "Sorc", "WL", "SL", "Ranger", "Mecha", "Bio", "Renegado"
+    "Mestre", "LK", "Pala", "Cross", "Sumo", "Cigana", "Menestrel",
+    "Professor", "Arquimago", "SL", "Sniper", "MestreFerreiro", "Criador", "Desordeiro"
 ]
 
 def salvar_eventos():
