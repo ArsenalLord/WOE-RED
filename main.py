@@ -316,9 +316,89 @@ def formatar_lista_participantes(
 # ATUALIZAR MENSAGEM DO EVENTO
 # ============================================================
 
-async def atualizar_mensagem(
-    channel,
-    nome_evento
+async def atualizar_mensagem(channel, nome_evento):
+
+    evento = eventos.get(nome_evento)
+
+    if not evento:
+        return
+
+    canal_id = evento.get("canal_id")
+    mensagem_id = evento.get("mensagem_id")
+
+    if not canal_id or not mensagem_id:
+        print(f"⚠️ Evento {nome_evento} não possui ID da mensagem.")
+        return
+
+    try:
+
+        canal = bot.get_channel(canal_id)
+
+        if canal is None:
+            print(f"❌ Canal não encontrado: {canal_id}")
+            return
+
+        mensagem = await canal.fetch_message(mensagem_id)
+
+        pt_formada, reservas = separar_participantes(evento)
+
+        ausentes = ordenar_participantes(
+            evento.get("nao_vou", {})
+        )
+
+        embed = discord.Embed(
+            title=f"📅 Evento: {nome_evento}",
+            color=0x00BFFF
+        )
+
+        horario_inicio = evento.get("horario_inicio")
+
+        if horario_inicio:
+
+            embed.add_field(
+                name="⏰ Início",
+                value=formatar_data_horario(horario_inicio),
+                inline=False
+            )
+
+        embed.add_field(
+            name=f"🟢 PT FORMADA — {len(pt_formada)}/{LIMITE_PT}",
+            value=formatar_lista_participantes(pt_formada),
+            inline=False
+        )
+
+        embed.add_field(
+            name=f"🟡 RESERVAS — {len(reservas)}",
+            value=formatar_lista_participantes(reservas),
+            inline=False
+        )
+
+        embed.add_field(
+            name=f"❌ NÃO VÃO — {len(ausentes)}",
+            value=formatar_lista_participantes(ausentes),
+            inline=False
+        )
+
+        embed.set_footer(
+            text=(
+                "Os primeiros confirmados formam a PT. "
+                "Os demais ficam como reserva."
+            )
+        )
+
+        await mensagem.edit(
+            embed=embed,
+            view=PresencaView(nome_evento)
+        )
+
+        print(f"✅ Evento atualizado: {nome_evento}")
+
+    except Exception as e:
+
+        print(
+            f"❌ Erro ao atualizar mensagem do evento "
+            f"{nome_evento}: {e}"
+        )
 ):
 
     if channel is None:
