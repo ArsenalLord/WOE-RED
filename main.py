@@ -326,25 +326,45 @@ async def atualizar_mensagem(channel, nome_evento):
     canal_id = evento.get("canal_id")
     mensagem_id = evento.get("mensagem_id")
 
-    if not canal_id or not mensagem_id:
-        print(f"⚠️ Evento {nome_evento} não possui ID da mensagem.")
+    canal = bot.get_channel(canal_id) if canal_id else channel
+
+    if canal is None:
+        canal = channel
+
+    if canal is None:
+        print(f"❌ Canal não encontrado para o evento {nome_evento}.")
         return
 
+    mensagem = None
+
     try:
+        # Primeiro tenta usar o ID salvo.
+        if mensagem_id:
+            try:
+                mensagem = await canal.fetch_message(int(mensagem_id))
+            except (discord.NotFound, discord.HTTPException):
+                mensagem = None
 
-        canal = bot.get_channel(canal_id)
+        # Compatibilidade com eventos antigos que ainda não possuem mensagem_id.
+        if mensagem is None:
+            async for msg in canal.history(limit=100):
+                if not msg.embeds:
+                    continue
 
-        if canal is None:
-            print(f"❌ Canal não encontrado: {canal_id}")
+                titulo = msg.embeds[0].title
+                if titulo == f"📅 Evento: {nome_evento}":
+                    mensagem = msg
+                    evento["mensagem_id"] = msg.id
+                    salvar_eventos()
+                    print(f"🔎 Mensagem do evento encontrada: {nome_evento}")
+                    break
+
+        if mensagem is None:
+            print(f"⚠️ Mensagem do evento não encontrada: {nome_evento}")
             return
 
-        mensagem = await canal.fetch_message(mensagem_id)
-
         pt_formada, reservas = separar_participantes(evento)
-
-        ausentes = ordenar_participantes(
-            evento.get("nao_vou", {})
-        )
+        ausentes = ordenar_participantes(evento.get("nao_vou", {}))
 
         embed = discord.Embed(
             title=f"📅 Evento: {nome_evento}",
@@ -354,7 +374,6 @@ async def atualizar_mensagem(channel, nome_evento):
         horario_inicio = evento.get("horario_inicio")
 
         if horario_inicio:
-
             embed.add_field(
                 name="⏰ Início",
                 value=formatar_data_horario(horario_inicio),
@@ -381,7 +400,7 @@ async def atualizar_mensagem(channel, nome_evento):
 
         embed.set_footer(
             text=(
-                "Os primeiros confirmados formam a PT. "
+                "Os 12 primeiros confirmados formam a PT. "
                 "Os demais ficam como reserva."
             )
         )
@@ -394,148 +413,7 @@ async def atualizar_mensagem(channel, nome_evento):
         print(f"✅ Evento atualizado: {nome_evento}")
 
     except Exception as e:
-
-        print(
-            f"❌ Erro ao atualizar mensagem do evento "
-            f"{nome_evento}: {e}"
-        
-)
-
-    if channel is None:
-        return
-
-    try:
-
-        async for msg in channel.history(
-            limit=100
-        ):
-
-            if not msg.embeds:
-                continue
-
-            titulo = msg.embeds[0].title
-
-            if titulo != (
-                f"📅 Evento: {nome_evento}"
-            ):
-                continue
-
-            evento = eventos.get(
-                nome_evento
-            )
-
-            if not evento:
-                return
-
-            pt_formada, reservas = (
-                separar_participantes(
-                    evento
-                )
-            )
-
-            ausentes = ordenar_participantes(
-                evento.get(
-                    "nao_vou",
-                    {}
-                )
-            )
-
-            embed = discord.Embed(
-                title=f"📅 Evento: {nome_evento}",
-                color=0x00BFFF
-            )
-
-            # ====================================================
-            # HORÁRIO DO EVENTO
-            # ====================================================
-
-            horario_inicio = evento.get(
-                "horario_inicio"
-            )
-
-            if horario_inicio:
-
-                embed.add_field(
-                    name="⏰ Início",
-                    value=formatar_data_horario(
-                        horario_inicio
-                    ),
-                    inline=False
-                )
-
-            # ====================================================
-            # PT
-            # ====================================================
-
-            embed.add_field(
-                name=(
-                    f"🟢 PT FORMADA — "
-                    f"{len(pt_formada)}/{LIMITE_PT}"
-                ),
-
-                value=formatar_lista_participantes(
-                    pt_formada
-                ),
-
-                inline=False
-            )
-
-            # ====================================================
-            # RESERVAS
-            # ====================================================
-
-            embed.add_field(
-                name=(
-                    f"🟡 RESERVAS — "
-                    f"{len(reservas)}"
-                ),
-
-                value=formatar_lista_participantes(
-                    reservas
-                ),
-
-                inline=False
-            )
-
-            # ====================================================
-            # NÃO VÃO
-            # ====================================================
-
-            embed.add_field(
-                name=(
-                    f"❌ NÃO VÃO — "
-                    f"{len(ausentes)}"
-                ),
-
-                value=formatar_lista_participantes(
-                    ausentes
-                ),
-
-                inline=False
-            )
-
-            embed.set_footer(
-                text=(
-                    "Os 12 primeiros confirmados "
-                    "formam a PT. Os demais ficam "
-                    "como reserva."
-                )
-            )
-
-            await msg.edit(
-                embed=embed,
-                view=PresencaView(
-                    nome_evento
-                )
-            )
-
-            break
-
-    except Exception as e:
-
-        print(
-            f"Erro ao atualizar evento: {e}"
-        )
+        print(f"❌ Erro ao atualizar mensagem do evento {nome_evento}: {e}")
 
 
 # ============================================================
@@ -768,6 +646,8 @@ class ClasseSelect(
                 None
             )
 
+            salvar_eventos()
+
             await interaction.response.send_message(
                 (
                     f"✅ Presença confirmada como "
@@ -777,6 +657,11 @@ class ClasseSelect(
                     "pela ordem de confirmação."
                 ),
                 ephemeral=True
+            )
+
+            await atualizar_mensagem(
+                interaction.channel,
+                self.nome_evento
             )
 
         # ====================================================
@@ -1349,6 +1234,8 @@ async def criar_evento(
 
         "canal_id": ctx.channel.id,
 
+        "mensagem_id": None,
+
         "aviso_10_minutos": False
     }
 
@@ -1397,12 +1284,16 @@ async def criar_evento(
         )
     )
 
-    await ctx.send(
+    mensagem = await ctx.send(
         embed=embed,
         view=PresencaView(
             nome_evento
         )
     )
+
+    # Guarda o ID da mensagem para que o painel possa ser atualizado.
+    eventos[nome_evento]["mensagem_id"] = mensagem.id
+    salvar_eventos()
 
 
 # ============================================================
