@@ -86,7 +86,9 @@ CLASSES_FIXAS = [
     "Sniper",
     "MestreFerreiro",
     "Criador",
-    "Desordeiro"
+    "Desordeiro",
+    "TK",
+    "Guns"
 ]
 
 LIMITE_PT = 12
