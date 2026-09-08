@@ -2,9 +2,9 @@ import os
 from threading import Thread
 from flask import Flask
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
@@ -48,9 +48,23 @@ bot = commands.Bot(
 ARQUIVO_EVENTOS = "eventos.json"
 
 if os.path.exists(ARQUIVO_EVENTOS):
-    with open(ARQUIVO_EVENTOS, "r", encoding="utf-8") as f:
-        eventos = json.load(f)
+
+    try:
+
+        with open(
+            ARQUIVO_EVENTOS,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            eventos = json.load(f)
+
+    except Exception:
+
+        eventos = {}
+
 else:
+
     eventos = {}
 
 
@@ -73,13 +87,10 @@ CLASSES_FIXAS = [
     "MestreFerreiro",
     "Criador",
     "Desordeiro"
-    "Guns"
-    "TK"
 ]
 
 LIMITE_PT = 12
 
-# Horário de Brasília
 FUSO_HORARIO = ZoneInfo("America/Sao_Paulo")
 
 
@@ -104,7 +115,7 @@ def salvar_eventos():
 
 
 # ============================================================
-# HORÁRIO ATUAL
+# HORÁRIO
 # ============================================================
 
 def horario_atual():
@@ -116,7 +127,9 @@ def formatar_horario(data_iso):
 
     try:
 
-        data = datetime.fromisoformat(data_iso)
+        data = datetime.fromisoformat(
+            data_iso
+        )
 
         return data.strftime("%H:%M")
 
@@ -125,42 +138,80 @@ def formatar_horario(data_iso):
         return "--:--"
 
 
+def formatar_data_horario(data_iso):
+
+    try:
+
+        data = datetime.fromisoformat(
+            data_iso
+        )
+
+        return data.strftime(
+            "%d/%m/%Y às %H:%M"
+        )
+
+    except:
+
+        return "Data inválida"
+
+
 # ============================================================
-# NORMALIZAR PARTICIPANTES
+# CONVERTER DATA DO COMANDO
 # ============================================================
 
-def normalizar_participante(user_id, dados):
+def converter_data_evento(
+    data,
+    horario
+):
 
-    """
-    Permite que eventos antigos continuem funcionando.
+    try:
 
-    Formato antigo:
-        "123456": "LK"
+        data_hora = datetime.strptime(
+            f"{data} {horario}",
+            "%d/%m/%Y %H:%M"
+        )
 
-    Formato novo:
-        "123456": {
-            "classe": "LK",
-            "horario": "2026-09-07T16:00:00..."
-        }
-    """
+        return data_hora.replace(
+            tzinfo=FUSO_HORARIO
+        )
 
+    except ValueError:
+
+        return None
+
+
+# ============================================================
+# NORMALIZAR PARTICIPANTE
+# ============================================================
+
+def normalizar_participante(
+    user_id,
+    dados
+):
+
+    # Formato novo
     if isinstance(dados, dict):
 
         return {
             "user_id": str(user_id),
+
             "classe": dados.get(
                 "classe",
                 "Sem classe"
             ),
+
             "horario": dados.get(
                 "horario",
                 ""
             )
         }
 
+    # Compatibilidade com eventos antigos
     return {
         "user_id": str(user_id),
+
         "classe": dados,
+
         "horario": ""
     }
 
@@ -184,9 +235,8 @@ def ordenar_participantes(dados):
             participante
         )
 
-    # Quem não possui horário fica no final
     participantes.sort(
-        key=lambda x: x["horario"] or "9999-99-99"
+        key=lambda x: x["horario"] or "9999"
     )
 
     return participantes
@@ -205,23 +255,33 @@ def separar_participantes(evento):
         )
     )
 
-    pt_formada = confirmados[:LIMITE_PT]
+    pt_formada = confirmados[
+        :LIMITE_PT
+    ]
 
-    reservas = confirmados[LIMITE_PT:]
+    reservas = confirmados[
+        LIMITE_PT:
+    ]
 
-    return pt_formada, reservas
+    return (
+        pt_formada,
+        reservas
+    )
 
 
 # ============================================================
 # FORMATAR PARTICIPANTE
 # ============================================================
 
-def formatar_participante(participante):
+def formatar_participante(
+    participante
+):
 
     return (
         f"<@{participante['user_id']}> "
         f"({participante['classe']}) "
-        f"— 🕐 {formatar_horario(participante['horario'])}"
+        f"— 🕐 "
+        f"{formatar_horario(participante['horario'])}"
     )
 
 
@@ -229,7 +289,9 @@ def formatar_participante(participante):
 # FORMATAR LISTA
 # ============================================================
 
-def formatar_lista_participantes(lista):
+def formatar_lista_participantes(
+    lista
+):
 
     if not lista:
 
@@ -260,7 +322,6 @@ async def atualizar_mensagem(
 ):
 
     if channel is None:
-
         return
 
     try:
@@ -269,100 +330,126 @@ async def atualizar_mensagem(
             limit=100
         ):
 
-            if (
-                msg.embeds
-                and msg.embeds[0].title
-                == f"📅 Evento: {nome_evento}"
+            if not msg.embeds:
+                continue
+
+            titulo = msg.embeds[0].title
+
+            if titulo != (
+                f"📅 Evento: {nome_evento}"
             ):
+                continue
 
-                evento = eventos.get(
-                    nome_evento,
-                    {
-                        "presentes": {},
-                        "nao_vou": {}
-                    }
-                )
+            evento = eventos.get(
+                nome_evento
+            )
 
-                # Separar PT e reservas
-                pt_formada, reservas = separar_participantes(
+            if not evento:
+                return
+
+            pt_formada, reservas = (
+                separar_participantes(
                     evento
                 )
+            )
 
-                # Lista de ausentes
-                ausentes = ordenar_participantes(
-                    evento.get(
-                        "nao_vou",
-                        {}
-                    )
+            ausentes = ordenar_participantes(
+                evento.get(
+                    "nao_vou",
+                    {}
                 )
+            )
 
-                # Criar embed
-                embed = discord.Embed(
-                    title=f"📅 Evento: {nome_evento}",
-                    color=0x00BFFF
-                )
+            embed = discord.Embed(
+                title=f"📅 Evento: {nome_evento}",
+                color=0x00BFFF
+            )
 
-                # ------------------------------------------------
-                # PT FORMADA
-                # ------------------------------------------------
+            # ====================================================
+            # HORÁRIO DO EVENTO
+            # ====================================================
+
+            horario_inicio = evento.get(
+                "horario_inicio"
+            )
+
+            if horario_inicio:
 
                 embed.add_field(
-                    name=(
-                        f"🟢 PT FORMADA — "
-                        f"{len(pt_formada)}/{LIMITE_PT}"
-                    ),
-                    value=formatar_lista_participantes(
-                        pt_formada
+                    name="⏰ Início",
+                    value=formatar_data_horario(
+                        horario_inicio
                     ),
                     inline=False
                 )
 
-                # ------------------------------------------------
-                # RESERVAS
-                # ------------------------------------------------
+            # ====================================================
+            # PT
+            # ====================================================
 
-                embed.add_field(
-                    name=(
-                        f"🟡 RESERVAS — "
-                        f"{len(reservas)}"
-                    ),
-                    value=formatar_lista_participantes(
-                        reservas
-                    ),
-                    inline=False
+            embed.add_field(
+                name=(
+                    f"🟢 PT FORMADA — "
+                    f"{len(pt_formada)}/{LIMITE_PT}"
+                ),
+
+                value=formatar_lista_participantes(
+                    pt_formada
+                ),
+
+                inline=False
+            )
+
+            # ====================================================
+            # RESERVAS
+            # ====================================================
+
+            embed.add_field(
+                name=(
+                    f"🟡 RESERVAS — "
+                    f"{len(reservas)}"
+                ),
+
+                value=formatar_lista_participantes(
+                    reservas
+                ),
+
+                inline=False
+            )
+
+            # ====================================================
+            # NÃO VÃO
+            # ====================================================
+
+            embed.add_field(
+                name=(
+                    f"❌ NÃO VÃO — "
+                    f"{len(ausentes)}"
+                ),
+
+                value=formatar_lista_participantes(
+                    ausentes
+                ),
+
+                inline=False
+            )
+
+            embed.set_footer(
+                text=(
+                    "Os 12 primeiros confirmados "
+                    "formam a PT. Os demais ficam "
+                    "como reserva."
                 )
+            )
 
-                # ------------------------------------------------
-                # NÃO VÃO
-                # ------------------------------------------------
-
-                embed.add_field(
-                    name=(
-                        f"❌ NÃO VÃO — "
-                        f"{len(ausentes)}"
-                    ),
-                    value=formatar_lista_participantes(
-                        ausentes
-                    ),
-                    inline=False
+            await msg.edit(
+                embed=embed,
+                view=PresencaView(
+                    nome_evento
                 )
+            )
 
-                embed.set_footer(
-                    text=(
-                        "Os 12 primeiros confirmados "
-                        "formam a PT. Os demais ficam "
-                        "como reserva."
-                    )
-                )
-
-                await msg.edit(
-                    embed=embed,
-                    view=PresencaView(
-                        nome_evento
-                    )
-                )
-
-                break
+            break
 
     except Exception as e:
 
@@ -372,10 +459,145 @@ async def atualizar_mensagem(
 
 
 # ============================================================
+# AVISO 10 MINUTOS
+# ============================================================
+
+async def verificar_eventos_10_minutos():
+
+    agora = horario_atual()
+
+    for nome_evento, evento in list(
+        eventos.items()
+    ):
+
+        horario_inicio_str = evento.get(
+            "horario_inicio"
+        )
+
+        if not horario_inicio_str:
+            continue
+
+        try:
+
+            horario_inicio = datetime.fromisoformat(
+                horario_inicio_str
+            )
+
+        except Exception:
+
+            continue
+
+        # ====================================================
+        # VERIFICAR SE ESTÁ NO MOMENTO DO AVISO
+        # ====================================================
+
+        diferenca = (
+            horario_inicio - agora
+        )
+
+        # Entre 10 minutos antes e o horário de início
+        if (
+            timedelta(0)
+            <= diferenca
+            <= timedelta(minutes=10)
+        ):
+
+            # Já enviou?
+            if evento.get(
+                "aviso_10_minutos",
+                False
+            ):
+
+                continue
+
+            canal_id = evento.get(
+                "canal_id"
+            )
+
+            if not canal_id:
+                continue
+
+            canal = bot.get_channel(
+                canal_id
+            )
+
+            if canal is None:
+                continue
+
+            pt_formada, reservas = (
+                separar_participantes(
+                    evento
+                )
+            )
+
+            if not pt_formada:
+
+                mensagem = (
+                    f"🚨 **ATENÇÃO!**\n\n"
+                    f"📅 **{nome_evento}** "
+                    f"começa às "
+                    f"**{horario_inicio.strftime('%H:%M')}**.\n\n"
+                    f"⚠️ A PT ainda está vazia."
+                )
+
+            else:
+
+                mencoes = " ".join(
+                    f"<@{p['user_id']}>"
+                    for p in pt_formada
+                )
+
+                mensagem = (
+                    f"🚨 **ATENÇÃO — FALTAM 10 MINUTOS!**\n\n"
+                    f"📅 **Evento:** {nome_evento}\n"
+                    f"⏰ **Início:** "
+                    f"{horario_inicio.strftime('%H:%M')}\n\n"
+                    f"🟢 **PT FORMADA:**\n"
+                    f"{mencoes}\n\n"
+                    f"⚔️ A PT está sendo chamada para o evento."
+                )
+
+            try:
+
+                await canal.send(
+                    mensagem
+                )
+
+                evento[
+                    "aviso_10_minutos"
+                ] = True
+
+                salvar_eventos()
+
+                print(
+                    f"⏰ Aviso de 10 minutos enviado: "
+                    f"{nome_evento}"
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Erro ao enviar aviso: {e}"
+                )
+
+
+# ============================================================
+# LOOP DE VERIFICAÇÃO
+# ============================================================
+
+@tasks.loop(seconds=30)
+async def verificar_eventos():
+
+    await verificar_eventos_10_minutos()
+
+
+# ============================================================
 # SELECT DE CLASSE
 # ============================================================
 
-class ClasseSelect(discord.ui.Select):
+class ClasseSelect(
+    discord.ui.Select
+):
 
     def __init__(
         self,
@@ -385,7 +607,11 @@ class ClasseSelect(discord.ui.Select):
     ):
 
         self.nome_evento = nome_evento
-        self.user_id = str(user_id)
+
+        self.user_id = str(
+            user_id
+        )
+
         self.tipo = tipo
 
         options = [
@@ -405,43 +631,58 @@ class ClasseSelect(discord.ui.Select):
 
     async def callback(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         escolha = self.values[0]
 
-        # Criar evento caso não exista
-        if self.nome_evento not in eventos:
-
-            eventos[self.nome_evento] = {
-                "presentes": {},
-                "nao_vou": {}
-            }
-
-        evento = eventos[
+        evento = eventos.get(
             self.nome_evento
-        ]
+        )
 
-        # ========================================================
-        # MARCAR PRESENÇA
-        # ========================================================
+        if not evento:
+
+            await interaction.response.send_message(
+                "❌ Evento não encontrado.",
+                ephemeral=True
+            )
+
+            return
+
+        agora = horario_atual()
+
+        # ====================================================
+        # CONFIRMAR PRESENÇA
+        # ====================================================
 
         if self.tipo == "presente":
 
-            agora = horario_atual()
+            # ------------------------------------------------
+            # Verificar se já está confirmado
+            # ------------------------------------------------
 
-            # --------------------------------------------
-            # NOVA CONFIRMAÇÃO
-            # --------------------------------------------
+            if self.user_id in evento.get(
+                "presentes",
+                {}
+            ):
+
+                await interaction.response.send_message(
+                    "⚠️ Você já está confirmado.",
+                    ephemeral=True
+                )
+
+                return
 
             evento["presentes"][
                 self.user_id
             ] = {
+
                 "classe": escolha,
+
                 "horario": agora.isoformat()
             }
 
-            # Remover de NÃO VOU
+            # Remover de não vou
             evento["nao_vou"].pop(
                 self.user_id,
                 None
@@ -451,37 +692,57 @@ class ClasseSelect(discord.ui.Select):
                 (
                     f"✅ Presença confirmada como "
                     f"**{escolha}** às "
-                    f"**{agora.strftime('%H:%M')}**."
+                    f"**{agora.strftime('%H:%M')}**.\n\n"
+                    "📋 Sua posição será definida "
+                    "pela ordem de confirmação."
                 ),
                 ephemeral=True
             )
 
-        # ========================================================
+        # ====================================================
         # NÃO VOU
-        # ========================================================
+        # ====================================================
 
         else:
 
-            agora = horario_atual()
-
             # ------------------------------------------------
-            # VERIFICAR SE JÁ ESTAVA CONFIRMADO
+            # Verificar se já está como não vou
             # ------------------------------------------------
 
-            participante_anterior = evento[
-                "presentes"
-            ].get(
-                self.user_id
-            )
+            if self.user_id in evento.get(
+                "nao_vou",
+                {}
+            ):
 
-            if participante_anterior:
-
-                dados_anteriores = normalizar_participante(
-                    self.user_id,
-                    participante_anterior
+                await interaction.response.send_message(
+                    "⚠️ Você já está como **Não vou**.",
+                    ephemeral=True
                 )
 
-                classe_final = dados_anteriores[
+                return
+
+            # ------------------------------------------------
+            # Verificar se estava confirmado
+            # ------------------------------------------------
+
+            estava_confirmado = (
+                self.user_id
+                in evento.get(
+                    "presentes",
+                    {}
+                )
+            )
+
+            if estava_confirmado:
+
+                dados_antigos = normalizar_participante(
+                    self.user_id,
+                    evento["presentes"][
+                        self.user_id
+                    ]
+                )
+
+                classe_final = dados_antigos[
                     "classe"
                 ]
 
@@ -490,46 +751,115 @@ class ClasseSelect(discord.ui.Select):
                 classe_final = escolha
 
             # ------------------------------------------------
-            # COLOCAR EM NÃO VÃO
+            # VERIFICAR PT ANTES
+            # ------------------------------------------------
+
+            pt_antes, reservas_antes = (
+                separar_participantes(
+                    evento
+                )
+            )
+
+            ids_pt_antes = [
+                p["user_id"]
+                for p in pt_antes
+            ]
+
+            # ------------------------------------------------
+            # Registrar ausência
             # ------------------------------------------------
 
             evento["nao_vou"][
                 self.user_id
             ] = {
+
                 "classe": classe_final,
+
                 "horario": agora.isoformat()
             }
 
-            # Remover dos confirmados
             evento["presentes"].pop(
                 self.user_id,
                 None
             )
 
+            salvar_eventos()
+
+            # ------------------------------------------------
+            # VERIFICAR PT DEPOIS
+            # ------------------------------------------------
+
+            pt_depois, reservas_depois = (
+                separar_participantes(
+                    evento
+                )
+            )
+
+            # ------------------------------------------------
+            # ENCONTRAR QUEM SUBIU
+            # ------------------------------------------------
+
+            ids_pt_depois = [
+                p["user_id"]
+                for p in pt_depois
+            ]
+
+            promovidos = [
+                p
+                for p in pt_depois
+                if p["user_id"]
+                not in ids_pt_antes
+            ]
+
+            # ------------------------------------------------
+            # MENSAGEM PARA QUEM SAIU
+            # ------------------------------------------------
+
             await interaction.response.send_message(
                 (
-                    f"❌ Ausência registrada às "
-                    f"**{agora.strftime('%H:%M')}**.\n"
+                    f"❌ Sua ausência foi registrada "
+                    f"às **{agora.strftime('%H:%M')}**.\n"
                     f"Classe: **{classe_final}**"
                 ),
                 ephemeral=True
             )
 
-        # Salvar
-        salvar_eventos()
+            # ------------------------------------------------
+            # AVISAR RESERVA PROMOVIDO
+            # ------------------------------------------------
 
-        # Atualizar mensagem
-        await atualizar_mensagem(
-            interaction.channel,
-            self.nome_evento
-        )
+            if promovidos:
+
+                nomes_promovidos = " ".join(
+                    f"<@{p['user_id']}>"
+                    for p in promovidos
+                )
+
+                await interaction.channel.send(
+                    (
+                        f"🔄 **VAGA DISPONÍVEL!**\n\n"
+                        f"❌ <@{self.user_id}> "
+                        f"deixou a PT.\n\n"
+                        f"🟢 O próximo reserva assumiu "
+                        f"a vaga:\n"
+                        f"{nomes_promovidos}\n\n"
+                        f"⚔️ **Você está na PT FORMADA!**"
+                    )
+                )
+
+            await atualizar_mensagem(
+                interaction.channel,
+                self.nome_evento
+            )
 
 
 # ============================================================
-# VIEW DA SELEÇÃO DE CLASSE
+# VIEW SELEÇÃO DE CLASSE
 # ============================================================
 
-class ClasseView(discord.ui.View):
+class ClasseView(
+    discord.ui.View
+):
 
     def __init__(
         self,
@@ -555,7 +885,9 @@ class ClasseView(discord.ui.View):
 # BOTÕES DO EVENTO
 # ============================================================
 
-class PresencaView(discord.ui.View):
+class PresencaView(
+    discord.ui.View
+):
 
     def __init__(
         self,
@@ -570,7 +902,7 @@ class PresencaView(discord.ui.View):
 
 
     # ========================================================
-    # BOTÃO MARCAR PRESENÇA
+    # MARCAR PRESENÇA
     # ========================================================
 
     @discord.ui.button(
@@ -579,8 +911,8 @@ class PresencaView(discord.ui.View):
     )
     async def marcar(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
+        interaction,
+        button
     ):
 
         evento = eventos.get(
@@ -601,7 +933,7 @@ class PresencaView(discord.ui.View):
         )
 
         # ------------------------------------------------
-        # VERIFICAR SE JÁ ESTÁ CONFIRMADO
+        # Já está confirmado
         # ------------------------------------------------
 
         if user_id in evento.get(
@@ -610,17 +942,14 @@ class PresencaView(discord.ui.View):
         ):
 
             await interaction.response.send_message(
-                (
-                    "⚠️ Você já está confirmado "
-                    "neste evento."
-                ),
+                "⚠️ Você já está confirmado neste evento.",
                 ephemeral=True
             )
 
             return
 
         # ------------------------------------------------
-        # Se estava em NÃO VOU, permitir voltar
+        # Estava como NÃO VOU
         # ------------------------------------------------
 
         if user_id in evento.get(
@@ -638,7 +967,9 @@ class PresencaView(discord.ui.View):
             agora = horario_atual()
 
             evento["presentes"][user_id] = {
+
                 "classe": classe,
+
                 "horario": agora.isoformat()
             }
 
@@ -654,8 +985,8 @@ class PresencaView(discord.ui.View):
                     f"✅ Você voltou para a lista "
                     f"como **{classe}** às "
                     f"**{agora.strftime('%H:%M')}**.\n\n"
-                    "Você entrou novamente no final "
-                    "da fila de confirmação."
+                    "📋 Você entrou novamente no "
+                    "final da fila."
                 ),
                 ephemeral=True
             )
@@ -668,7 +999,7 @@ class PresencaView(discord.ui.View):
             return
 
         # ------------------------------------------------
-        # NOVA CONFIRMAÇÃO
+        # Novo participante
         # ------------------------------------------------
 
         await interaction.response.send_message(
@@ -683,7 +1014,7 @@ class PresencaView(discord.ui.View):
 
 
     # ========================================================
-    # BOTÃO NÃO VOU
+    # NÃO VOU
     # ========================================================
 
     @discord.ui.button(
@@ -692,8 +1023,8 @@ class PresencaView(discord.ui.View):
     )
     async def nao_vou(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
+        interaction,
+        button
     ):
 
         evento = eventos.get(
@@ -714,7 +1045,7 @@ class PresencaView(discord.ui.View):
         )
 
         # ------------------------------------------------
-        # SE JÁ ESTÁ COMO NÃO VOU
+        # Já está como não vou
         # ------------------------------------------------
 
         if user_id in evento.get(
@@ -733,7 +1064,7 @@ class PresencaView(discord.ui.View):
             return
 
         # ------------------------------------------------
-        # SE JÁ ESTÁ CONFIRMADO
+        # Está confirmado
         # ------------------------------------------------
 
         if user_id in evento.get(
@@ -750,8 +1081,17 @@ class PresencaView(discord.ui.View):
 
             agora = horario_atual()
 
+            # PT antes da saída
+            pt_antes, reservas_antes = (
+                separar_participantes(
+                    evento
+                )
+            )
+
             evento["nao_vou"][user_id] = {
+
                 "classe": classe,
+
                 "horario": agora.isoformat()
             }
 
@@ -762,6 +1102,25 @@ class PresencaView(discord.ui.View):
 
             salvar_eventos()
 
+            # PT depois da saída
+            pt_depois, reservas_depois = (
+                separar_participantes(
+                    evento
+                )
+            )
+
+            ids_antes = {
+                p["user_id"]
+                for p in pt_antes
+            }
+
+            promovidos = [
+                p
+                for p in pt_depois
+                if p["user_id"]
+                not in ids_antes
+            ]
+
             await interaction.response.send_message(
                 (
                     f"❌ Sua ausência foi registrada "
@@ -771,6 +1130,28 @@ class PresencaView(discord.ui.View):
                 ephemeral=True
             )
 
+            # ------------------------------------------------
+            # PROMOVER RESERVA
+            # ------------------------------------------------
+
+            if promovidos:
+
+                mencoes = " ".join(
+                    f"<@{p['user_id']}>"
+                    for p in promovidos
+                )
+
+                await interaction.channel.send(
+                    (
+                        f"🔄 **VAGA DISPONÍVEL!**\n\n"
+                        f"❌ <@{user_id}> "
+                        f"deixou a PT.\n\n"
+                        f"🟢 **Novo membro da PT:**\n"
+                        f"{mencoes}\n\n"
+                        f"⚔️ **Você assumiu a vaga!**"
+                    )
+                )
+
             await atualizar_mensagem(
                 interaction.channel,
                 self.nome_evento
@@ -779,7 +1160,7 @@ class PresencaView(discord.ui.View):
             return
 
         # ------------------------------------------------
-        # AINDA NÃO ESTÁ NA LISTA
+        # Nunca confirmou
         # ------------------------------------------------
 
         await interaction.response.send_message(
@@ -803,8 +1184,68 @@ class PresencaView(discord.ui.View):
 async def criar_evento(
     ctx,
     *,
-    nome_evento
+    argumentos
 ):
+
+    partes = argumentos.rsplit(
+        " ",
+        2
+    )
+
+    if len(partes) != 3:
+
+        await ctx.send(
+            (
+                "❌ Formato incorreto.\n\n"
+                "Use:\n"
+                "`!criar_evento Nome do Evento DD/MM/AAAA HH:MM`\n\n"
+                "Exemplo:\n"
+                "`!criar_evento Torre 08/09/2026 20:00`"
+            )
+        )
+
+        return
+
+    nome_evento = partes[0]
+    data = partes[1]
+    horario = partes[2]
+
+    # ========================================================
+    # VERIFICAR DATA
+    # ========================================================
+
+    data_hora = converter_data_evento(
+        data,
+        horario
+    )
+
+    if data_hora is None:
+
+        await ctx.send(
+            (
+                "❌ Data ou horário inválido.\n"
+                "Use o formato:\n"
+                "`DD/MM/AAAA HH:MM`"
+            )
+        )
+
+        return
+
+    # ========================================================
+    # NÃO PERMITIR EVENTO NO PASSADO
+    # ========================================================
+
+    if data_hora <= horario_atual():
+
+        await ctx.send(
+            "❌ O horário do evento precisa ser no futuro."
+        )
+
+        return
+
+    # ========================================================
+    # EVENTO JÁ EXISTE
+    # ========================================================
 
     if nome_evento in eventos:
 
@@ -814,16 +1255,40 @@ async def criar_evento(
 
         return
 
+    # ========================================================
+    # CRIAR EVENTO
+    # ========================================================
+
     eventos[nome_evento] = {
+
         "presentes": {},
-        "nao_vou": {}
+
+        "nao_vou": {},
+
+        "horario_inicio": data_hora.isoformat(),
+
+        "canal_id": ctx.channel.id,
+
+        "aviso_10_minutos": False
     }
 
     salvar_eventos()
 
+    # ========================================================
+    # EMBED
+    # ========================================================
+
     embed = discord.Embed(
         title=f"📅 Evento: {nome_evento}",
         color=0x00BFFF
+    )
+
+    embed.add_field(
+        name="⏰ Início",
+        value=data_hora.strftime(
+            "%d/%m/%Y às %H:%M"
+        ),
+        inline=False
     )
 
     embed.add_field(
@@ -846,9 +1311,9 @@ async def criar_evento(
 
     embed.set_footer(
         text=(
-            "Os 12 primeiros confirmados "
-            "formam a PT. Os demais ficam "
-            "como reserva."
+            "Os 12 primeiros confirmados formam "
+            "a PT. O aviso será enviado 10 minutos "
+            "antes do início."
         )
     )
 
@@ -885,8 +1350,10 @@ async def lista(
         nome_evento
     ]
 
-    pt_formada, reservas = separar_participantes(
-        evento
+    pt_formada, reservas = (
+        separar_participantes(
+            evento
+        )
     )
 
     ausentes = ordenar_participantes(
@@ -900,6 +1367,20 @@ async def lista(
         title=f"📋 Lista de {nome_evento}",
         color=0x1E90FF
     )
+
+    horario_inicio = evento.get(
+        "horario_inicio"
+    )
+
+    if horario_inicio:
+
+        embed.add_field(
+            name="⏰ Início",
+            value=formatar_data_horario(
+                horario_inicio
+            ),
+            inline=False
+        )
 
     embed.add_field(
         name=(
@@ -981,6 +1462,15 @@ async def on_ready():
     print(
         f"🤖 Bot online como {bot.user}"
     )
+
+    # Evitar iniciar o loop duas vezes
+    if not verificar_eventos.is_running():
+
+        verificar_eventos.start()
+
+        print(
+            "⏰ Sistema de avisos de eventos iniciado."
+        )
 
 
 # ============================================================
