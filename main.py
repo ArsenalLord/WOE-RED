@@ -89,7 +89,7 @@ CLASSES_FIXAS = [
     "Desordeiro"
 ]
 
-LIMITE_PT = 12
+LIMITE_PT = 2
 
 FUSO_HORARIO = ZoneInfo("America/Sao_Paulo")
 
