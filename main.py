@@ -398,7 +398,7 @@ async def atualizar_mensagem(channel, nome_evento):
         print(
             f"❌ Erro ao atualizar mensagem do evento "
             f"{nome_evento}: {e}"
-        )
+        
 ):
 
     if channel is None:
