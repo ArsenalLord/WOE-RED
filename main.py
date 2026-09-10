@@ -6,7 +6,7 @@ from discord.ext import commands, tasks
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from uuid import uuid4
+import random
 
 # ============================================================
 # FLASK
@@ -61,35 +61,157 @@ else:
 # CONFIGURAÇÕES
 # ============================================================
 
-CLASSES_FIXAS = [
-    "Mestre",
-    "LK",
-    "Pala",
-    "Cross",
-    "Sumo",
-    "Cigana",
-    "Menestrel",
-    "Professor",
-    "Arquimago",
-    "SL",
-    "Sniper",
-    "MestreFerreiro",
-    "Criador",
-    "Desordeiro",
-    "TK",
-    "Guns"
+# Cada classe tem: o arquivo de imagem (emoji da aplicação) e um
+# emoji unicode de reserva, usado enquanto o upload não acontece.
+CLASSES = [
+    {"nome": "Mestre",             "arquivo": "MONK.webp",           "fallback": "👊"},
+    {"nome": "Sumo Sacerdote",     "arquivo": "SUMO.webp",           "fallback": "🙏"},
+    {"nome": "Lorde",              "arquivo": "LK.webp",             "fallback": "⚔️"},
+    {"nome": "Paladino",           "arquivo": "PALADIN.webp",        "fallback": "🛡️"},
+    {"nome": "Algoz",              "arquivo": "SINX.webp",           "fallback": "🗡️"},
+    {"nome": "Desordeiro",         "arquivo": "STALKER.webp",        "fallback": "🗝️"},
+    {"nome": "Cigana",             "arquivo": "DANCER.webp",         "fallback": "💃"},
+    {"nome": "Bardo",              "arquivo": "MENESTREL.png",       "fallback": "🎻"},
+    {"nome": "Atirador de Elite",  "arquivo": "SNIPER.webp",         "fallback": "🏹"},
+    {"nome": "Professor",          "arquivo": "PROFESSOR.webp",      "fallback": "📘"},
+    {"nome": "Arquimago",          "arquivo": "WIZARD.webp",         "fallback": "🔥"},
+    {"nome": "Mestre-Ferreiro",    "arquivo": "FERREIRO.webp",       "fallback": "🔨"},
+    {"nome": "Criador",            "arquivo": "CREATOR.webp",        "fallback": "⚗️"},
+    {"nome": "Justiceiro",         "arquivo": "GUNS.png",            "fallback": "🔫"},
+    {"nome": "Mestre Taekon",      "arquivo": "MTK.png",             "fallback": "🥋"},
+    {"nome": "Espiritualista",     "arquivo": "ESPIRITUALISTA.png",  "fallback": "🔮"},
+    {"nome": "Ninja",              "arquivo": "NINJA.png",           "fallback": "🥷"},
+    {"nome": "Super Aprendiz",     "arquivo": "SUPER APRENDIZ.png",  "fallback": "🎓"},
 ]
+
+CLASSES_FIXAS = [classe["nome"] for classe in CLASSES]
+
+PASTA_EMOJIS = "emojis"
+
+# Preenchido no on_ready com os emojis enviados para a aplicação.
+EMOJIS_CLASSES = {}
 
 LIMITE_PT = 12
 FUSO_HORARIO = ZoneInfo("America/Sao_Paulo")
+
+# Banner exibido no rodapé de todos os painéis de evento.
+# Deixe como None para não mostrar imagem nenhuma.
+IMAGEM_EVENTO = (
+    "https://assets.gnjoyamericas.com/static/upload/notice/2026/09/"
+    "EVENTO_PTBR%20(1)_7101c78a.gif"
+)
+
+# ------------------------------------------------------------------
+# TIPOS DE EVENTO
+# ------------------------------------------------------------------
+# Cada comando de criação usa um preset daqui. Para acrescentar um
+# tipo novo: adicione a entrada abaixo e registre o comando no bloco
+# "COMANDOS DE CRIAÇÃO DE EVENTO", no fim do arquivo.
+#
+#   rotulo      -> nome do tipo, usado nas mensagens de confirmação
+#   nome_padrao -> nome sugerido do evento (None = sempre digitar)
+#   thumbnail   -> ícone no canto superior direito do painel
+#   imagem      -> banner próprio (None = usa IMAGEM_EVENTO)
+
+def letras_emoji(texto):
+    """
+    Escreve um texto com as letras em emoji: "ESGOTO" -> 🇪 🇸 🇬 🇴 🇹 🇴
+
+    Duas coisas importantes acontecem aqui:
+
+    1. Os códigos `:regional_indicator_e:` só funcionam quando UMA PESSOA
+       digita na caixa de mensagem — é o app do Discord que troca pelo
+       emoji. O bot precisa mandar o caractere de verdade, senão aparece
+       o texto `:regional_indicator_e:` cru na tela.
+
+    2. Duas dessas letras coladas viram BANDEIRA. "ESGOTO REAL" sem
+       separador vira 🇪🇸 (Espanha) + 🇹🇴 (Tonga) + 🇷🇪 + 🇦🇱 (Albânia).
+       Por isso cada letra sai separada por um espaço.
+    """
+    partes = []
+
+    for letra in texto.upper():
+        if "A" <= letra <= "Z":
+            # 0x1F1E6 é o 🇦; o resto do alfabeto vem em sequência.
+            partes.append(chr(0x1F1E6 + ord(letra) - ord("A")))
+        elif letra == " ":
+            partes.append(" ")      # separação maior entre palavras
+        else:
+            partes.append(letra)
+
+    return " ".join(partes)
+
+
+TIPO_PADRAO = "padrao"
+
+TIPOS_EVENTO = {
+    "padrao": {
+        "rotulo": "Evento",
+        "nome_padrao": None,
+        "thumbnail": (
+            "https://wiki.aureumro.com/images/6/65/FogueiraZeny_npc.gif?v=2"
+        ),
+        "imagem": None,
+    },
+    "esgoto": {
+        "rotulo": "Esgoto Real",
+        "nome_padrao": letras_emoji("Esgoto Real"),
+        "thumbnail": (
+            "https://wiki.aureumro.com/images/8/8e/EsgMob_esporo_real_v2.gif"
+        ),
+        "imagem": None,
+    },
+    "torre": {
+        "rotulo": "Torre Sem Fim",
+        "nome_padrao": letras_emoji("Torre Sem Fim"),
+        "thumbnail": (
+            "https://wiki.aureumro.com/images/9/94/TorreSemFim_npc.gif"
+        ),
+        "imagem": None,
+    },
+}
+
+
+def preset_evento(evento):
+    """Preset visual do evento, caindo no padrão se o tipo não existir."""
+    tipo = (evento or {}).get("tipo") or TIPO_PADRAO
+    return TIPOS_EVENTO.get(tipo, TIPOS_EVENTO[TIPO_PADRAO])
 
 
 # ============================================================
 # MIGRAÇÃO / COMPATIBILIDADE
 # ============================================================
 
-def gerar_evento_id():
-    return uuid4().hex
+TAMANHO_ID_EVENTO = 4
+
+
+def id_valido(texto):
+    """Um ID bom é só dígitos e do tamanho combinado."""
+    texto = str(texto)
+    return texto.isdigit() and len(texto) == TAMANHO_ID_EVENTO
+
+
+def gerar_evento_id(ja_usados=None):
+    """
+    Código aleatório de 4 dígitos, único entre os eventos existentes.
+
+    São 10 mil combinações para uma agenda que costuma ter poucos
+    eventos ao mesmo tempo, então a colisão é rara — mas quando
+    acontece, sorteia de novo em vez de sobrescrever o evento antigo.
+    """
+    ocupados = set(eventos)
+
+    if ja_usados:
+        ocupados |= set(ja_usados)
+
+    for _ in range(500):
+        codigo = f"{random.randint(0, 9999):0{TAMANHO_ID_EVENTO}d}"
+
+        if codigo not in ocupados:
+            return codigo
+
+    # Só chega aqui se quase todos os 10 mil códigos estiverem em uso.
+    return f"{random.randint(10000, 99999)}"
 
 
 def migrar_eventos_antigos():
@@ -115,17 +237,21 @@ def migrar_eventos_antigos():
         # Já está no formato novo.
         if "nome_evento" in evento and "evento_id" in evento:
             evento_id = str(evento["evento_id"])
+
+            # IDs longos do formato antigo viram códigos de 4 dígitos.
+            if not id_valido(evento_id) or evento_id in novos:
+                evento_id = gerar_evento_id(novos)
+
             evento["evento_id"] = evento_id
             evento.setdefault("reservas", {})
             evento.setdefault("presentes", {})
             evento.setdefault("nao_vou", {})
+            evento.setdefault("tipo", TIPO_PADRAO)
             novos[evento_id] = evento
             continue
 
         # Formato antigo: a chave era o nome do evento.
-        evento_id = gerar_evento_id()
-        while evento_id in novos:
-            evento_id = gerar_evento_id()
+        evento_id = gerar_evento_id(novos)
 
         evento["evento_id"] = evento_id
         evento["nome_evento"] = str(chave)
@@ -135,6 +261,7 @@ def migrar_eventos_antigos():
         evento.setdefault("mensagem_id", None)
         evento.setdefault("canal_id", None)
         evento.setdefault("aviso_10_minutos", False)
+        evento.setdefault("tipo", TIPO_PADRAO)
 
         # Reservas manuais não existiam no formato antigo.
         novos[evento_id] = evento
@@ -167,6 +294,92 @@ def salvar_eventos():
 
 
 migrar_eventos_antigos()
+
+
+# ============================================================
+# EMOJIS DAS CLASSES
+# ============================================================
+
+def nome_emoji_discord(arquivo):
+    """MONK.webp -> ro_monk (nomes de emoji só aceitam letras/números/_)."""
+    base = os.path.splitext(arquivo)[0].lower()
+    limpo = "".join(c if c.isalnum() else "_" for c in base)
+    return f"ro_{limpo}"[:32]
+
+
+def emoji_classe(nome_classe):
+    """Emoji da aplicação quando disponível, senão o unicode de reserva."""
+    if nome_classe in EMOJIS_CLASSES:
+        return EMOJIS_CLASSES[nome_classe]
+
+    for classe in CLASSES:
+        if classe["nome"] == nome_classe:
+            return classe["fallback"]
+
+    return "❔"
+
+
+async def sincronizar_emojis_classes():
+    """
+    Envia as imagens das classes como emojis DA APLICAÇÃO.
+
+    Emojis de aplicação funcionam em qualquer servidor onde o bot esteja
+    e não ocupam os slots de emoji do servidor. O envio acontece só uma
+    vez: nas próximas inicializações os emojis já existentes são reusados.
+    """
+    try:
+        existentes = {
+            emoji.name: emoji
+            for emoji in await bot.fetch_application_emojis()
+        }
+    except Exception as e:
+        print(f"⚠️ Não foi possível listar os emojis da aplicação: {e}")
+        return
+
+    enviados = 0
+
+    for classe in CLASSES:
+        arquivo = classe["arquivo"]
+
+        if not arquivo:
+            continue
+
+        nome_emoji = nome_emoji_discord(arquivo)
+
+        # Já foi enviado em uma execução anterior.
+        if nome_emoji in existentes:
+            EMOJIS_CLASSES[classe["nome"]] = str(existentes[nome_emoji])
+            continue
+
+        caminho = os.path.join(PASTA_EMOJIS, arquivo)
+
+        if not os.path.exists(caminho):
+            print(f"⚠️ Imagem não encontrada: {caminho}")
+            continue
+
+        try:
+            with open(caminho, "rb") as f:
+                imagem = f.read()
+
+            emoji = await bot.create_application_emoji(
+                name=nome_emoji,
+                image=imagem
+            )
+
+            EMOJIS_CLASSES[classe["nome"]] = str(emoji)
+            enviados += 1
+
+        except Exception as e:
+            print(
+                f"⚠️ Falha ao enviar o emoji de {classe['nome']}: {e}"
+            )
+
+    total = len(EMOJIS_CLASSES)
+
+    if enviados:
+        print(f"🎨 {enviados} emoji(s) de classe enviados para a aplicação.")
+
+    print(f"🎨 {total}/{len(CLASSES)} classes com emoji próprio.")
 
 
 # ============================================================
@@ -214,6 +427,19 @@ def converter_data_evento(data, horario):
 
 def obter_evento(evento_id):
     return eventos.get(str(evento_id))
+
+
+def normalizar_id_evento(texto):
+    """
+    Aceita 427, 0427 ou #0427 e devolve sempre 0427.
+    Devolve None quando não há dígito nenhum no que foi digitado.
+    """
+    digitos = "".join(c for c in str(texto or "") if c.isdigit())
+
+    if not digitos:
+        return None
+
+    return digitos.zfill(TAMANHO_ID_EVENTO)
 
 
 def eventos_por_nome(nome_evento):
@@ -386,24 +612,51 @@ def promover_proxima_reserva(evento):
 # FORMATAR PARTICIPANTE
 # ============================================================
 
-def formatar_participante(participante):
+def timestamp_discord(data_iso, estilo="F"):
+    """
+    Timestamp nativo do Discord: cada pessoa vê no próprio fuso e o
+    estilo "R" vira uma contagem regressiva que se atualiza sozinha.
+    """
+    try:
+        data = datetime.fromisoformat(data_iso)
+        return f"<t:{int(data.timestamp())}:{estilo}>"
+    except Exception:
+        return "`--`"
+
+
+def barra_progresso(atual, total):
+    atual = max(0, min(atual, total))
+    return "▰" * atual + "▱" * (total - atual)
+
+
+def formatar_participante(participante, numero=None):
+    emoji = emoji_classe(participante["classe"])
+    prefixo = f"`{numero:02d}` " if numero is not None else ""
+
     return (
-        f"<@{participante['user_id']}> "
-        f"({participante['classe']}) "
-        f"— 🕐 {formatar_horario(participante['horario'])}"
+        f"{prefixo}{emoji} <@{participante['user_id']}> · "
+        f"**{participante['classe']}** · "
+        f"`{formatar_horario(participante['horario'])}`"
     )
 
 
-def formatar_lista_participantes(lista):
-    if not lista:
-        return "Ninguém"
-
+def formatar_lista_participantes(lista, numerar=True, vagas_livres=0):
     linhas = []
 
     for numero, participante in enumerate(lista, start=1):
         linhas.append(
-            f"**{numero}.** {formatar_participante(participante)}"
+            formatar_participante(
+                participante,
+                numero if numerar else None
+            )
         )
+
+    # Vagas ainda abertas na PT, para deixar claro quanto falta.
+    for numero in range(len(lista) + 1, len(lista) + 1 + vagas_livres):
+        linhas.append(f"`{numero:02d}` ◽ *vaga aberta*")
+
+    if not linhas:
+        return "*— ninguém por aqui —*"
 
     return "\n".join(linhas)
 
@@ -431,53 +684,131 @@ def dividir_texto_discord(texto, limite=1000):
     return partes
 
 
+def adicionar_campo_lista(embed, titulo, texto, maximo_partes=3):
+    """
+    Cada campo de embed aceita no máximo 1024 caracteres. Listas maiores
+    são quebradas em campos de continuação em vez de derrubar a mensagem.
+    """
+    partes = dividir_texto_discord(texto, 1024)
+    excedente = partes[maximo_partes:]
+
+    for indice, parte in enumerate(partes[:maximo_partes]):
+        embed.add_field(
+            name=titulo if indice == 0 else "\u200b",
+            value=parte,
+            inline=False
+        )
+
+    if excedente:
+        restantes = sum(
+            parte.count("\n") + 1
+            for parte in excedente
+        )
+        embed.add_field(
+            name="\u200b",
+            value=f"*… e mais {restantes} pessoa(s).*",
+            inline=False
+        )
+
+
 # ============================================================
 # CRIAR EMBED DO EVENTO
 # ============================================================
 
-def criar_embed_evento(evento, titulo_prefixo="📅 Evento"):
+def criar_embed_evento(evento, titulo_prefixo=None):
     nome_evento = evento.get("nome_evento", "Evento")
     horario_inicio = evento.get("horario_inicio")
 
     pt_formada, reservas = separar_participantes(evento)
     ausentes = ordenar_participantes(evento.get("nao_vou", {}))
 
-    embed = discord.Embed(
-        title=f"{titulo_prefixo}: {nome_evento}",
-        color=0x00BFFF
-    )
+    vagas_livres = max(0, LIMITE_PT - len(pt_formada))
+    lotado = vagas_livres == 0
+
+    ja_comecou = False
+    if horario_inicio:
+        try:
+            ja_comecou = (
+                datetime.fromisoformat(horario_inicio) <= horario_atual()
+            )
+        except Exception:
+            ja_comecou = False
+
+    if ja_comecou:
+        cor = 0x4E5058      # cinza — evento já iniciado
+    elif lotado:
+        cor = 0x2ECC71      # verde — PT completa
+    else:
+        cor = 0x5865F2      # azul — em formação
+
+    titulo = f"  {nome_evento.upper()}"
+    if titulo_prefixo:
+        titulo = f"{titulo_prefixo}  ·  {nome_evento.upper()}"
+
+    descricao = []
 
     if horario_inicio:
-        embed.add_field(
-            name="⏰ Início",
-            value=formatar_data_horario(horario_inicio),
-            inline=False
+        descricao.append(
+            f"🗓️  **Início**  ·  {timestamp_discord(horario_inicio, 'F')}"
         )
+        descricao.append(
+            f"⏳  **{'Começou' if ja_comecou else 'Começa'}**  ·  "
+            f"{timestamp_discord(horario_inicio, 'R')}"
+        )
+        descricao.append("")
 
-    embed.add_field(
-        name=f"🟢 PT FORMADA — {len(pt_formada)}/{LIMITE_PT}",
-        value=formatar_lista_participantes(pt_formada),
-        inline=False
+    descricao.append(
+        f"`{barra_progresso(len(pt_formada), LIMITE_PT)}`  "
+        f"**{len(pt_formada)}/{LIMITE_PT}**"
+        + ("  ·  🔒 **PT COMPLETA**" if lotado else f"  ·  {vagas_livres} vaga(s)")
     )
 
-    embed.add_field(
-        name=f"🟡 RESERVAS — {len(reservas)}",
-        value=formatar_lista_participantes(reservas),
-        inline=False
+    embed = discord.Embed(
+        title=titulo,
+        description="\n".join(descricao),
+        color=cor
     )
 
-    embed.add_field(
-        name=f"❌ NÃO VÃO — {len(ausentes)}",
-        value=formatar_lista_participantes(ausentes),
-        inline=False
+    preset = preset_evento(evento)
+
+    if preset.get("thumbnail"):
+        embed.set_thumbnail(url=preset["thumbnail"])
+
+    imagem = preset.get("imagem") or IMAGEM_EVENTO
+
+    if imagem:
+        embed.set_image(url=imagem)
+
+    adicionar_campo_lista(
+        embed,
+        f"👥  GRUPO  ·  {len(pt_formada)}/{LIMITE_PT}",
+        formatar_lista_participantes(
+            pt_formada,
+            vagas_livres=vagas_livres
+        )
+    )
+
+    adicionar_campo_lista(
+        embed,
+        f"🪑  RESERVAS  ·  {len(reservas)}",
+        formatar_lista_participantes(reservas)
+    )
+
+    adicionar_campo_lista(
+        embed,
+        f"🔴  AUSENTES  ·  {len(ausentes)}",
+        formatar_lista_participantes(ausentes, numerar=False)
     )
 
     embed.set_footer(
         text=(
-            f"Os {LIMITE_PT} primeiros confirmados formam a PT. "
-            "Quem usar 'Entrar na Reserva' entra diretamente na fila de reserva."
+            f"ID {evento.get('evento_id', '----')}  ·  "
+            f"Os {LIMITE_PT} primeiros confirmados formam a PT  ·  "
+            "Atualizado"
         )
     )
+
+    embed.timestamp = horario_atual()
 
     return embed
 
@@ -522,18 +853,31 @@ async def atualizar_mensagem(evento_id, channel=None):
                 if not msg.embeds:
                     continue
 
-                titulo = msg.embeds[0].title or ""
-                if titulo != f"📅 Evento: {nome_evento}":
+                embed_antigo = msg.embeds[0]
+                titulo = embed_antigo.title or ""
+
+                # Aceita o layout novo e o antigo, para não perder os
+                # painéis já publicados antes desta atualização.
+                titulos_validos = (
+                    f"  {nome_evento.upper()}",
+                    f"📅 Evento: {nome_evento}",
+                )
+
+                if titulo not in titulos_validos:
                     continue
 
                 # Se houver mais de um evento com o mesmo nome, confira a data.
                 if horario_inicio:
-                    encontrou_horario = any(
-                        field.name == "⏰ Início"
-                        and field.value == formatar_data_horario(horario_inicio)
-                        for field in msg.embeds[0].fields
+                    marcas_horario = (
+                        formatar_data_horario(horario_inicio),
+                        timestamp_discord(horario_inicio, "F"),
                     )
-                    if not encontrou_horario:
+
+                    texto_embed = (embed_antigo.description or "") + "".join(
+                        field.value or "" for field in embed_antigo.fields
+                    )
+
+                    if not any(marca in texto_embed for marca in marcas_horario):
                         continue
 
                 mensagem = msg
@@ -655,8 +999,11 @@ class ClasseSelect(discord.ui.Select):
         self.tipo = tipo
 
         options = [
-            discord.SelectOption(label=classe)
-            for classe in CLASSES_FIXAS
+            discord.SelectOption(
+                label=classe["nome"],
+                emoji=emoji_classe(classe["nome"])
+            )
+            for classe in CLASSES
         ]
 
         super().__init__(
@@ -1170,31 +1517,54 @@ async def atualizar_paineis_ao_iniciar():
 
 
 # ============================================================
-# COMANDO CRIAR EVENTO
+# COMANDOS DE CRIAÇÃO DE EVENTO
 # ============================================================
 
-@bot.command(name="criar_evento")
-async def criar_evento(ctx, *, argumentos):
-    partes = argumentos.rsplit(" ", 2)
+async def criar_evento_do_tipo(ctx, argumentos, tipo):
+    """
+    Fluxo de criação compartilhado por todos os comandos.
+    O que muda entre eles é apenas o preset visual em TIPOS_EVENTO.
+    """
+    preset = TIPOS_EVENTO.get(tipo, TIPOS_EVENTO[TIPO_PADRAO])
+    comando = ctx.invoked_with or "criar_evento"
+    nome_padrao = preset.get("nome_padrao")
 
-    if len(partes) != 3:
-        await ctx.send(
-            (
-                "❌ Formato incorreto.\n\n"
-                "Use:\n"
-                "`!criar_evento Nome do Evento DD/MM/AAAA HH:MM`\n\n"
-                "Exemplo:\n"
-                "`!criar_evento Torre 08/09/2026 20:00`"
+    partes = (argumentos or "").strip().rsplit(" ", 2)
+
+    if len(partes) == 3:
+        nome_evento = partes[0].strip()
+        data = partes[1]
+        horario = partes[2]
+    elif len(partes) == 2 and nome_padrao:
+        # Tipos com nome próprio aceitam só a data e o horário.
+        nome_evento = nome_padrao
+        data = partes[0]
+        horario = partes[1]
+    else:
+        nome_evento = ""
+        data = ""
+        horario = ""
+
+    if not nome_evento or not data or not horario:
+        linhas = ["❌ Formato incorreto.", "", "Use:"]
+
+        if nome_padrao:
+            linhas.append(
+                f"`!{comando} DD/MM/AAAA HH:MM` — cria **{nome_padrao}**"
             )
-        )
-        return
+            linhas.append(
+                f"`!{comando} Nome do Evento DD/MM/AAAA HH:MM` — com outro nome"
+            )
+            linhas.append("")
+            linhas.append("Exemplo:")
+            linhas.append(f"`!{comando} 15/09/2026 20:00`")
+        else:
+            linhas.append(f"`!{comando} Nome do Evento DD/MM/AAAA HH:MM`")
+            linhas.append("")
+            linhas.append("Exemplo:")
+            linhas.append(f"`!{comando} Guerra do Emperium 15/09/2026 20:00`")
 
-    nome_evento = partes[0].strip()
-    data = partes[1]
-    horario = partes[2]
-
-    if not nome_evento:
-        await ctx.send("❌ O nome do evento não pode ficar vazio.")
+        await ctx.send("\n".join(linhas))
         return
 
     data_hora = converter_data_evento(data, horario)
@@ -1228,6 +1598,7 @@ async def criar_evento(ctx, *, argumentos):
     eventos[evento_id] = {
         "evento_id": evento_id,
         "nome_evento": nome_evento,
+        "tipo": tipo,
         "presentes": {},
         "reservas": {},
         "nao_vou": {},
@@ -1250,13 +1621,30 @@ async def criar_evento(ctx, *, argumentos):
 
     await ctx.send(
         (
-            f"✅ Evento **{nome_evento}** criado para "
+            f"✅ **{preset['rotulo']}** — **{nome_evento}** criado para "
             f"**{data_hora.strftime('%d/%m/%Y às %H:%M')}**.\n"
-            "🟢 A PT terá até 12 membros.\n"
-            "🟡 O botão **Entrar na Reserva** permite entrar diretamente na fila de reservas."
+            f"🆔 ID do evento: `{evento_id}`  ·  apague com `!apagar_evento {evento_id}`\n"
+            f"🟢 A PT terá até {LIMITE_PT} membros.\n"
+            "🟡 O botão **Entrar na Reserva** permite entrar diretamente "
+            "na fila de reservas."
         ),
         delete_after=10
     )
+
+
+@bot.command(name="criar_evento")
+async def criar_evento(ctx, *, argumentos=""):
+    await criar_evento_do_tipo(ctx, argumentos, "padrao")
+
+
+@bot.command(name="criar_esgoto")
+async def criar_esgoto(ctx, *, argumentos=""):
+    await criar_evento_do_tipo(ctx, argumentos, "esgoto")
+
+
+@bot.command(name="criar_torre")
+async def criar_torre(ctx, *, argumentos=""):
+    await criar_evento_do_tipo(ctx, argumentos, "torre")
 
 
 # ============================================================
@@ -1318,60 +1706,51 @@ async def lista(ctx, *, argumentos):
 # COMANDO APAGAR EVENTO
 # ============================================================
 
+def listar_eventos_com_id(limite=15):
+    """Eventos cadastrados com o ID de cada um, do mais próximo ao mais distante."""
+    if not eventos:
+        return "*Nenhum evento cadastrado no momento.*"
+
+    ordenados = sorted(
+        eventos.items(),
+        key=lambda item: item[1].get("horario_inicio", "9999")
+    )
+
+    linhas = []
+
+    for evento_id, evento in ordenados[:limite]:
+        linhas.append(
+            f"`{evento_id}`  —  {evento.get('nome_evento', 'Evento')}  ·  "
+            f"{formatar_data_horario(evento.get('horario_inicio', ''))}"
+        )
+
+    if len(ordenados) > limite:
+        linhas.append(f"*… e mais {len(ordenados) - limite} evento(s).*")
+
+    return "\n".join(linhas)
+
+
 @bot.command(name="apagar_evento")
-async def apagar_evento(ctx, *, argumentos):
-    partes = argumentos.rsplit(" ", 2)
+async def apagar_evento(ctx, *, argumentos=""):
+    evento_id = normalizar_id_evento(argumentos)
+    evento = obter_evento(evento_id) if evento_id else None
 
-    evento_alvo = None
-
-    if len(partes) == 3:
-        evento_alvo = encontrar_evento_por_nome_data(
-            partes[0],
-            partes[1],
-            partes[2]
-        )
-
-    if evento_alvo:
-        evento_id, evento = evento_alvo
-        nome_evento = evento.get("nome_evento", "Evento")
-        horario_inicio = evento.get("horario_inicio", "")
-
-        del eventos[evento_id]
-        salvar_eventos()
+    if evento is None:
+        if evento_id:
+            aviso = f"❌ Não existe nenhum evento com o ID `{evento_id}`."
+        else:
+            aviso = "❌ Informe o ID do evento."
 
         await ctx.send(
-            (
-                f"🗑️ Evento **{nome_evento}** de "
-                f"**{formatar_data_horario(horario_inicio)}** removido."
-            )
+            aviso
+            + "\n\nUse: `!apagar_evento 0427`"
+            + "\nO ID fica no rodapé do painel do evento."
+            + "\n\n**Eventos cadastrados:**\n"
+            + listar_eventos_com_id()
         )
         return
 
-    nome_evento = argumentos.strip()
-    encontrados = eventos_por_nome(nome_evento)
-
-    if not encontrados:
-        await ctx.send("❌ Evento não encontrado.")
-        return
-
-    if len(encontrados) > 1:
-        linhas = [
-            f"**{i}.** {formatar_data_horario(evento.get('horario_inicio', ''))}"
-            for i, (_, evento) in enumerate(encontrados, start=1)
-        ]
-
-        await ctx.send(
-            (
-                f"⚠️ Existem vários eventos chamados **{nome_evento}**.\n\n"
-                + "\n".join(linhas)
-                + "\n\n"
-                "Informe a data e o horário para apagar apenas um:\n"
-                "`!apagar_evento Nome do Evento DD/MM/AAAA HH:MM`"
-            )
-        )
-        return
-
-    evento_id, evento = encontrados[0]
+    nome_evento = evento.get("nome_evento", "Evento")
     horario_inicio = evento.get("horario_inicio", "")
 
     del eventos[evento_id]
@@ -1379,7 +1758,7 @@ async def apagar_evento(ctx, *, argumentos):
 
     await ctx.send(
         (
-            f"🗑️ Evento **{nome_evento}** de "
+            f"🗑️ Evento **{nome_evento}** (ID `{evento_id}`) de "
             f"**{formatar_data_horario(horario_inicio)}** removido."
         )
     )
@@ -1393,6 +1772,7 @@ async def apagar_evento(ctx, *, argumentos):
 async def on_ready():
     print(f"🤖 Bot online como {bot.user}")
 
+    await sincronizar_emojis_classes()
     await registrar_views_persistentes()
     await atualizar_paineis_ao_iniciar()
 
