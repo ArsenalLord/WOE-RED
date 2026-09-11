@@ -71,7 +71,7 @@ CLASSES = [
     {"nome": "Algoz",              "arquivo": "SINX.webp",           "fallback": "🗡️"},
     {"nome": "Desordeiro",         "arquivo": "STALKER.webp",        "fallback": "🗝️"},
     {"nome": "Cigana",             "arquivo": "DANCER.webp",         "fallback": "💃"},
-    {"nome": "Menestrel",          "arquivo": "MENESTREL.png",       "fallback": "🎻"},
+    {"nome": "Bardo",              "arquivo": "MENESTREL.png",       "fallback": "🎻"},
     {"nome": "Atirador de Elite",  "arquivo": "SNIPER.webp",         "fallback": "🏹"},
     {"nome": "Professor",          "arquivo": "PROFESSOR.webp",      "fallback": "📘"},
     {"nome": "Arquimago",          "arquivo": "WIZARD.webp",         "fallback": "🔥"},
@@ -987,12 +987,12 @@ async def verificar_eventos_10_minutos():
 
 async def finalizar_eventos_expirados():
     """
-    Remove automaticamente o painel do Discord 2 horas após o início
-    do evento e apaga o evento do arquivo eventos.json.
+    Apaga o painel do Discord e remove o evento do eventos.json
+    exatamente 2 horas após a data e hora de início do evento.
 
-    Se a mensagem já tiver sido apagada manualmente, o evento também é
-    finalizado normalmente. Se o bot não conseguir acessar o canal, ele
-    mantém o evento salvo para tentar novamente no próximo ciclo.
+    Esta função é isolada do sistema de presença: se ocorrer algum
+    erro ao finalizar um evento, ele continua salvo e será tentado
+    novamente no próximo ciclo.
     """
     agora = horario_atual()
 
@@ -1007,6 +1007,7 @@ async def finalizar_eventos_expirados():
         except Exception:
             continue
 
+        # A data faz parte da comparação. Ex.: 13/09 15:00 -> 13/09 17:00.
         horario_finalizacao = horario_inicio + TEMPO_FINALIZACAO_EVENTO
 
         if agora < horario_finalizacao:
@@ -1016,8 +1017,6 @@ async def finalizar_eventos_expirados():
         mensagem_id = evento.get("mensagem_id")
         canal = bot.get_channel(canal_id) if canal_id else None
 
-        # Sem canal, não removemos do JSON ainda: tentamos novamente
-        # no próximo ciclo para garantir que o painel seja apagado.
         if canal is None:
             print(
                 f"⚠️ Canal não encontrado para finalizar o evento "
@@ -1031,14 +1030,12 @@ async def finalizar_eventos_expirados():
                     mensagem = await canal.fetch_message(int(mensagem_id))
                     await mensagem.delete()
                     print(
-                        f"🗑️ Painel do evento {evento_id} apagado "
-                        f"após 2 horas."
+                        f"🗑️ Painel do evento {evento_id} apagado após 2 horas."
                     )
                 except discord.NotFound:
-                    # Já foi apagado manualmente. Tudo certo.
+                    # O painel já foi apagado manualmente. Podemos finalizar o registro.
                     print(
-                        f"ℹ️ Painel do evento {evento_id} já não existia "
-                        f"no Discord."
+                        f"ℹ️ Painel do evento {evento_id} já não existe no Discord."
                     )
 
             nome_evento = evento.get("nome_evento", "Evento")
@@ -1053,7 +1050,7 @@ async def finalizar_eventos_expirados():
         except discord.Forbidden:
             print(
                 f"❌ Sem permissão para apagar o painel do evento "
-                f"{evento_id}. O evento será tentado novamente."
+                f"{evento_id}. Tentaremos novamente."
             )
         except discord.HTTPException as e:
             print(
