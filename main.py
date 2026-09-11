@@ -1577,13 +1577,42 @@ class PresencaView(discord.ui.View):
 # ============================================================
 
 async def registrar_views_persistentes():
-    for evento_id in eventos:
+    """
+    Registra as Views persistentes dos eventos existentes.
+    
+    Cada evento recebe sua própria View, usando o message_id
+    do painel correspondente.
+    """
+
+    for evento_id, evento in eventos.items():
         try:
-            bot.add_view(PresencaView(evento_id))
+            mensagem_id = evento.get("mensagem_id")
+
+            if mensagem_id:
+                bot.add_view(
+                    PresencaView(evento_id),
+                    message_id=int(mensagem_id)
+                )
+
+                print(
+                    f"🔘 View registrada: "
+                    f"evento={evento_id} | "
+                    f"mensagem={mensagem_id}"
+                )
+            else:
+                bot.add_view(PresencaView(evento_id))
+
+                print(
+                    f"🔘 View registrada: "
+                    f"evento={evento_id} | "
+                    f"sem message_id"
+                )
+
         except Exception as e:
             print(
-                f"⚠️ Não foi possível registrar a view do evento "
+                f"❌ Erro ao registrar View do evento "
                 f"{evento_id}: {e}"
+            )
             )
 
 
@@ -1858,6 +1887,10 @@ async def apagar_evento(ctx, *, argumentos=""):
 # Evita repetir a inicialização sempre que o Discord reconecta.
 # As views persistentes e os painéis já registrados continuam válidos
 # durante reconexões e não precisam ser adicionados novamente.
+# ============================================================
+# INICIALIZAÇÃO DO BOT
+# ============================================================
+
 BOT_INICIALIZADO = False
 
 
@@ -1867,21 +1900,34 @@ async def on_ready():
 
     print(f"🤖 Bot online como {bot.user}")
 
-    # O Discord pode chamar on_ready novamente após uma reconexão.
-    # Não devemos registrar as mesmas views nem editar todos os painéis
-    # repetidamente, pois isso pode duplicar handlers de interação.
     if BOT_INICIALIZADO:
         return
 
     BOT_INICIALIZADO = True
 
     await sincronizar_emojis_classes()
-    await registrar_views_persistentes()
     await atualizar_paineis_ao_iniciar()
 
     if not verificar_eventos.is_running():
         verificar_eventos.start()
         print("⏰ Sistema de avisos de eventos iniciado.")
+
+
+# ============================================================
+# REGISTRO DAS VIEWS PERSISTENTES
+# ============================================================
+
+async def setup_hook():
+    """
+    Registra as Views persistentes antes da conexão
+    completa do bot com o Gateway.
+    """
+    await registrar_views_persistentes()
+
+    print("🔘 Views persistentes registradas.")
+
+
+bot.setup_hook = setup_hook
 
 
 # ============================================================
@@ -1900,9 +1946,8 @@ async def on_interaction(interaction):
         )
 
 
-
 # ============================================================
 # INICIAR BOT
 # ============================================================
 
-bot.run(os.getenv("TOKEN"))
+bot.run(TOKEN)
