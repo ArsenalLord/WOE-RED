@@ -45,7 +45,11 @@ bot = commands.Bot(
 # ARQUIVO DE EVENTOS
 # ============================================================
 
-ARQUIVO_EVENTOS = "eventos.json"
+ARQUIVO_EVENTOS = os.getenv("EVENTOS_FILE", "eventos.json")
+
+# Permite usar, por exemplo, /data/eventos.json em um Railway Volume.
+_pasta_eventos = os.path.dirname(os.path.abspath(ARQUIVO_EVENTOS))
+os.makedirs(_pasta_eventos, exist_ok=True)
 
 if os.path.exists(ARQUIVO_EVENTOS):
     try:
@@ -987,13 +991,7 @@ TEMPO_FINALIZACAO_EVENTO = timedelta(hours=2)
 
 async def finalizar_eventos_expirados():
     """
-    Finaliza automaticamente cada evento 2 horas após seu início.
-
-    - Apaga o painel do Discord quando possível.
-    - Remove o evento do eventos.json.
-    - Se a mensagem já tiver sido apagada, considera o evento finalizado.
-    - Se houver erro temporário de API/permissão, mantém o evento no JSON
-      para tentar novamente no próximo ciclo.
+    Finaliza cada evento 2 horas após o horário de início.
     """
     agora = horario_atual()
 
@@ -1006,67 +1004,38 @@ async def finalizar_eventos_expirados():
         try:
             horario_inicio = datetime.fromisoformat(horario_inicio_str)
         except Exception:
-            print(
-                f"⚠️ Não foi possível interpretar a data do evento "
-                f"{evento_id}: {horario_inicio_str}"
-            )
             continue
 
-        horario_finalizacao = horario_inicio + TEMPO_FINALIZACAO_EVENTO
-
-        if agora < horario_finalizacao:
+        if agora < horario_inicio + TEMPO_FINALIZACAO_EVENTO:
             continue
 
         nome_evento = evento.get("nome_evento", f"Evento {evento_id}")
         canal_id = evento.get("canal_id")
         mensagem_id = evento.get("mensagem_id")
 
-        # Se não existe painel conhecido para apagar, apenas finaliza
-        # o registro local para não manter eventos antigos indefinidamente.
-        if not canal_id or not mensagem_id:
-            eventos.pop(evento_id, None)
-            salvar_eventos()
-            print(
-                f"🗑️ Evento finalizado (sem painel registrado): "
-                f"{nome_evento} | ID={evento_id}"
-            )
-            continue
-
         try:
-            canal = bot.get_channel(int(canal_id))
+            canal = bot.get_channel(int(canal_id)) if canal_id else None
 
-            if canal is None:
+            if canal is None and canal_id:
                 try:
                     canal = await bot.fetch_channel(int(canal_id))
                 except discord.NotFound:
                     canal = None
 
-            if canal is None:
-                # O canal não existe mais. Não há painel para apagar.
-                eventos.pop(evento_id, None)
-                salvar_eventos()
-                print(
-                    f"🗑️ Evento finalizado (canal não encontrado): "
-                    f"{nome_evento} | ID={evento_id}"
-                )
-                continue
+            if canal is not None and mensagem_id:
+                try:
+                    mensagem = await canal.fetch_message(int(mensagem_id))
+                    await mensagem.delete()
+                    print(
+                        f"🗑️ Painel apagado após 2h: "
+                        f"{nome_evento} | ID={evento_id}"
+                    )
+                except discord.NotFound:
+                    print(
+                        f"🗑️ Painel já não existia: "
+                        f"{nome_evento} | ID={evento_id}"
+                    )
 
-            try:
-                mensagem = await canal.fetch_message(int(mensagem_id))
-                await mensagem.delete()
-                print(
-                    f"🗑️ Painel apagado após 2h: "
-                    f"{nome_evento} | ID={evento_id}"
-                )
-
-            except discord.NotFound:
-                print(
-                    f"🗑️ Painel já não existia: "
-                    f"{nome_evento} | ID={evento_id}"
-                )
-
-            # Só remove do JSON depois de apagar a mensagem ou confirmar
-            # que ela já não existe.
             eventos.pop(evento_id, None)
             salvar_eventos()
 
@@ -1077,21 +1046,17 @@ async def finalizar_eventos_expirados():
 
         except discord.Forbidden:
             print(
-                f"⚠️ Sem permissão para finalizar o evento "
-                f"{nome_evento} | ID={evento_id}. "
-                f"Nova tentativa em 30s."
+                f"⚠️ Sem permissão para finalizar "
+                f"{nome_evento} | ID={evento_id}. Nova tentativa em 30s."
             )
-
         except discord.HTTPException as e:
             print(
-                f"⚠️ Erro HTTP ao finalizar o evento "
-                f"{nome_evento} | ID={evento_id}: {e}. "
-                f"Nova tentativa em 30s."
+                f"⚠️ Erro HTTP ao finalizar "
+                f"{nome_evento} | ID={evento_id}: {e}. Nova tentativa em 30s."
             )
-
         except Exception as e:
             print(
-                f"⚠️ Erro ao finalizar o evento "
+                f"⚠️ Erro ao finalizar "
                 f"{nome_evento} | ID={evento_id}: {e}"
             )
 
@@ -1610,10 +1575,7 @@ class PresencaView(discord.ui.View):
 
 async def registrar_views_persistentes():
     """
-    Registra as Views persistentes de todos os eventos existentes.
-
-    O message_id é informado quando disponível para associar a View
-    diretamente ao painel antigo correspondente.
+    Registra as Views persistentes dos eventos salvos.
     """
     registrados = 0
 
@@ -1648,6 +1610,229 @@ async def registrar_views_persistentes():
     print(
         f"🔘 Views persistentes registradas: "
         f"{registrados}/{len(eventos)}."
+    )
+
+
+# ============================================================
+# RECUPERAR PAINÉIS ANTIGOS DO DISCORD
+# ============================================================
+
+_RE_PARTICIPANTE_EMBED = re.compile(
+    r"<@!?(\d+)>\s*·\s*\*\*(.*?)\*\*\s*·\s*`([^`]*)`"
+)
+
+
+def _tipo_a_partir_do_embed(embed):
+    """Identifica Torre/Esgoto pelo thumbnail ou título."""
+    thumbnail_url = ""
+    if embed.thumbnail:
+        thumbnail_url = embed.thumbnail.url or ""
+
+    titulo = (embed.title or "").upper()
+
+    if "TORRESEMFIM" in thumbnail_url.upper() or "TORRE" in titulo:
+        return "torre"
+
+    if "ESGMOB" in thumbnail_url.upper() or "ESGOTO" in titulo:
+        return "esgoto"
+
+    return "padrao"
+
+
+def _extrair_evento_do_embed(msg):
+    """
+    Reconstrói um evento a partir de um painel já publicado no Discord.
+    Recupera ID, nome, horário, canal, mensagem e listas de participantes.
+    """
+    if not msg.embeds:
+        return None
+
+    embed = msg.embeds[0]
+    footer = embed.footer.text if embed.footer else ""
+
+    match_id = re.search(r"\bID\s+(\d{4})\b", footer)
+    if not match_id:
+        return None
+
+    evento_id = match_id.group(1)
+    tipo = _tipo_a_partir_do_embed(embed)
+
+    if tipo == "torre":
+        nome_evento = TIPOS_EVENTO["torre"]["nome_padrao"]
+    elif tipo == "esgoto":
+        nome_evento = TIPOS_EVENTO["esgoto"]["nome_padrao"]
+    else:
+        nome_evento = (embed.title or "Evento").strip()
+
+    descricao = embed.description or ""
+    match_inicio = re.search(r"<t:(\d+):F>", descricao)
+
+    if not match_inicio:
+        return None
+
+    timestamp = int(match_inicio.group(1))
+    inicio_dt = datetime.fromtimestamp(timestamp, tz=FUSO_HORARIO)
+
+    presentes = {}
+    reservas = {}
+    nao_vou = {}
+    secao_atual = None
+
+    for field in embed.fields:
+        nome_campo = field.name or ""
+        valor = field.value or ""
+
+        if nome_campo.startswith("👥"):
+            secao_atual = "presentes"
+        elif nome_campo.startswith("🪑"):
+            secao_atual = "reservas"
+        elif nome_campo.startswith("🔴"):
+            secao_atual = "nao_vou"
+        elif nome_campo == "\u200b":
+            pass
+        else:
+            continue
+
+        for linha in valor.splitlines():
+            match = _RE_PARTICIPANTE_EMBED.search(linha)
+            if not match:
+                continue
+
+            user_id, classe, horario = match.groups()
+            horario_participante = ""
+
+            if re.fullmatch(r"\d{2}:\d{2}", horario):
+                horario_participante = datetime(
+                    inicio_dt.year,
+                    inicio_dt.month,
+                    inicio_dt.day,
+                    int(horario[:2]),
+                    int(horario[3:]),
+                    tzinfo=FUSO_HORARIO
+                ).isoformat()
+
+            dados = {
+                "classe": classe.strip(),
+                "horario": horario_participante
+            }
+
+            if secao_atual == "presentes":
+                presentes[user_id] = dados
+            elif secao_atual == "reservas":
+                reservas[user_id] = dados
+            elif secao_atual == "nao_vou":
+                nao_vou[user_id] = dados
+
+    return {
+        "evento_id": evento_id,
+        "nome_evento": nome_evento,
+        "tipo": tipo,
+        "presentes": presentes,
+        "reservas": reservas,
+        "nao_vou": nao_vou,
+        "horario_inicio": inicio_dt.isoformat(),
+        "canal_id": msg.channel.id,
+        "mensagem_id": msg.id,
+        "aviso_10_minutos": False
+    }
+
+
+@bot.command(name="recuperar_eventos")
+async def recuperar_eventos(ctx, *, filtro=""):
+    """
+    Recupera painéis antigos do canal atual.
+
+    Use:
+      !recuperar_eventos torre
+
+    O filtro "torre" recupera os painéis Torre Sem Fim do canal.
+    """
+    filtro = (filtro or "").strip().casefold()
+
+    if filtro in ("torre", "torre sem fim", "torre_sem_fim"):
+        tipo_filtro = "torre"
+    elif filtro in ("esgoto", "esgoto real", "esgoto_real"):
+        tipo_filtro = "esgoto"
+    else:
+        tipo_filtro = None
+
+    encontrados = []
+
+    try:
+        async for msg in ctx.channel.history(limit=200):
+            evento = _extrair_evento_do_embed(msg)
+
+            if not evento:
+                continue
+
+            if tipo_filtro and evento["tipo"] != tipo_filtro:
+                continue
+
+            if evento["evento_id"] in eventos:
+                continue
+
+            encontrados.append(evento)
+
+    except discord.Forbidden:
+        await ctx.send(
+            "❌ Não tenho permissão para ler o histórico deste canal."
+        )
+        return
+    except discord.HTTPException as e:
+        await ctx.send(
+            f"❌ Erro ao ler o histórico do canal: `{e}`"
+        )
+        return
+
+    if not encontrados:
+        await ctx.send(
+            "ℹ️ Nenhum painel de evento novo foi encontrado para recuperar."
+        )
+        return
+
+    for evento in encontrados:
+        eventos[evento["evento_id"]] = evento
+
+    salvar_eventos()
+
+    for evento in encontrados:
+        try:
+            bot.add_view(
+                PresencaView(evento["evento_id"]),
+                message_id=int(evento["mensagem_id"])
+            )
+        except Exception as e:
+            print(
+                f"⚠️ Erro ao registrar View recuperada "
+                f"{evento['evento_id']}: {e}"
+            )
+
+    atualizados = 0
+
+    for evento in encontrados:
+        try:
+            await atualizar_mensagem(evento["evento_id"], ctx.channel)
+            atualizados += 1
+        except Exception as e:
+            print(
+                f"⚠️ Erro ao atualizar painel recuperado "
+                f"{evento['evento_id']}: {e}"
+            )
+
+    nomes = "\n".join(
+        f"• **{evento['nome_evento']}** — ID `{evento['evento_id']}`"
+        for evento in encontrados
+    )
+
+    await ctx.send(
+        (
+            f"✅ **{len(encontrados)} evento(s) recuperado(s).**\n"
+            f"{nomes}\n\n"
+            f"🔘 Painéis atualizados: "
+            f"**{atualizados}/{len(encontrados)}**.\n"
+            "Os botões já podem ser usados novamente."
+        ),
+        delete_after=15
     )
 
 
@@ -1923,7 +2108,6 @@ async def apagar_evento(ctx, *, argumentos=""):
 async def on_interaction(interaction):
     if interaction.type == discord.InteractionType.component:
         custom_id = (interaction.data or {}).get("custom_id")
-
         print(
             f"🧩 INTERAÇÃO RECEBIDA | "
             f"usuário={interaction.user} | "
@@ -1960,8 +2144,6 @@ async def on_ready():
 
     print(f"🤖 Bot online como {bot.user}")
 
-    # O Discord pode chamar on_ready novamente após uma reconexão.
-    # Evitamos reconstruir os painéis repetidamente.
     if BOT_INICIALIZADO:
         return
 
@@ -1969,20 +2151,16 @@ async def on_ready():
 
     await sincronizar_emojis_classes()
 
-    # Remove primeiro os eventos que já passaram de 2 horas.
+    # Finaliza o que já passou de 2 horas.
     await finalizar_eventos_expirados()
 
-    # Reconstroi os painéis dos eventos que ainda estão ativos/futuros.
+    # Reconstroi os painéis salvos.
     await atualizar_paineis_ao_iniciar()
 
     if not verificar_eventos.is_running():
         verificar_eventos.start()
         print("⏰ Sistema de avisos e finalização de eventos iniciado.")
 
-
-# ============================================================
-# INICIAR BOT
-# ============================================================
 
 # ============================================================
 # INICIAR BOT
