@@ -94,9 +94,6 @@ EMOJIS_CLASSES = {}
 LIMITE_PT = 12
 FUSO_HORARIO = ZoneInfo("America/Sao_Paulo")
 
-# Depois de 2 horas do início, o evento é finalizado automaticamente.
-TEMPO_FINALIZACAO_EVENTO = timedelta(hours=2)
-
 # Banner exibido no rodapé de todos os painéis de evento.
 # Deixe como None para não mostrar imagem nenhuma.
 IMAGEM_EVENTO = (
@@ -982,17 +979,21 @@ async def verificar_eventos_10_minutos():
 
 
 # ============================================================
-# FINALIZAR EVENTOS EXPIRADOS
+# FINALIZAÇÃO AUTOMÁTICA DOS EVENTOS
 # ============================================================
+
+TEMPO_FINALIZACAO_EVENTO = timedelta(hours=2)
+
 
 async def finalizar_eventos_expirados():
     """
-    Apaga o painel do Discord e remove o evento do eventos.json
-    exatamente 2 horas após a data e hora de início do evento.
+    Finaliza automaticamente cada evento 2 horas após seu início.
 
-    Esta função é isolada do sistema de presença: se ocorrer algum
-    erro ao finalizar um evento, ele continua salvo e será tentado
-    novamente no próximo ciclo.
+    - Apaga o painel do Discord quando possível.
+    - Remove o evento do eventos.json.
+    - Se a mensagem já tiver sido apagada, considera o evento finalizado.
+    - Se houver erro temporário de API/permissão, mantém o evento no JSON
+      para tentar novamente no próximo ciclo.
     """
     agora = horario_atual()
 
@@ -1005,62 +1006,93 @@ async def finalizar_eventos_expirados():
         try:
             horario_inicio = datetime.fromisoformat(horario_inicio_str)
         except Exception:
+            print(
+                f"⚠️ Não foi possível interpretar a data do evento "
+                f"{evento_id}: {horario_inicio_str}"
+            )
             continue
 
-        # A data faz parte da comparação. Ex.: 13/09 15:00 -> 13/09 17:00.
         horario_finalizacao = horario_inicio + TEMPO_FINALIZACAO_EVENTO
 
         if agora < horario_finalizacao:
             continue
 
+        nome_evento = evento.get("nome_evento", f"Evento {evento_id}")
         canal_id = evento.get("canal_id")
         mensagem_id = evento.get("mensagem_id")
-        canal = bot.get_channel(canal_id) if canal_id else None
 
-        if canal is None:
+        # Se não existe painel conhecido para apagar, apenas finaliza
+        # o registro local para não manter eventos antigos indefinidamente.
+        if not canal_id or not mensagem_id:
+            eventos.pop(evento_id, None)
+            salvar_eventos()
             print(
-                f"⚠️ Canal não encontrado para finalizar o evento "
-                f"{evento_id}. Tentaremos novamente."
+                f"🗑️ Evento finalizado (sem painel registrado): "
+                f"{nome_evento} | ID={evento_id}"
             )
             continue
 
         try:
-            if mensagem_id:
-                try:
-                    mensagem = await canal.fetch_message(int(mensagem_id))
-                    await mensagem.delete()
-                    print(
-                        f"🗑️ Painel do evento {evento_id} apagado após 2 horas."
-                    )
-                except discord.NotFound:
-                    # O painel já foi apagado manualmente. Podemos finalizar o registro.
-                    print(
-                        f"ℹ️ Painel do evento {evento_id} já não existe no Discord."
-                    )
+            canal = bot.get_channel(int(canal_id))
 
-            nome_evento = evento.get("nome_evento", "Evento")
-            del eventos[evento_id]
+            if canal is None:
+                try:
+                    canal = await bot.fetch_channel(int(canal_id))
+                except discord.NotFound:
+                    canal = None
+
+            if canal is None:
+                # O canal não existe mais. Não há painel para apagar.
+                eventos.pop(evento_id, None)
+                salvar_eventos()
+                print(
+                    f"🗑️ Evento finalizado (canal não encontrado): "
+                    f"{nome_evento} | ID={evento_id}"
+                )
+                continue
+
+            try:
+                mensagem = await canal.fetch_message(int(mensagem_id))
+                await mensagem.delete()
+                print(
+                    f"🗑️ Painel apagado após 2h: "
+                    f"{nome_evento} | ID={evento_id}"
+                )
+
+            except discord.NotFound:
+                print(
+                    f"🗑️ Painel já não existia: "
+                    f"{nome_evento} | ID={evento_id}"
+                )
+
+            # Só remove do JSON depois de apagar a mensagem ou confirmar
+            # que ela já não existe.
+            eventos.pop(evento_id, None)
             salvar_eventos()
 
             print(
-                f"🏁 Evento finalizado automaticamente: "
-                f"{nome_evento} (ID {evento_id})"
+                f"🏁 Evento finalizado: "
+                f"{nome_evento} | ID={evento_id}"
             )
 
         except discord.Forbidden:
             print(
-                f"❌ Sem permissão para apagar o painel do evento "
-                f"{evento_id}. Tentaremos novamente."
+                f"⚠️ Sem permissão para finalizar o evento "
+                f"{nome_evento} | ID={evento_id}. "
+                f"Nova tentativa em 30s."
             )
+
         except discord.HTTPException as e:
             print(
-                f"❌ Erro do Discord ao finalizar o evento "
-                f"{evento_id}: {e}. Tentaremos novamente."
+                f"⚠️ Erro HTTP ao finalizar o evento "
+                f"{nome_evento} | ID={evento_id}: {e}. "
+                f"Nova tentativa em 30s."
             )
+
         except Exception as e:
             print(
-                f"❌ Erro ao finalizar o evento {evento_id}: {e}. "
-                f"Tentaremos novamente."
+                f"⚠️ Erro ao finalizar o evento "
+                f"{nome_evento} | ID={evento_id}: {e}"
             )
 
 
@@ -1578,13 +1610,14 @@ class PresencaView(discord.ui.View):
 
 async def registrar_views_persistentes():
     """
-    Registra as Views persistentes dos eventos existentes.
-    
-    Cada evento recebe sua própria View, usando o message_id
-    do painel correspondente.
-    """
+    Registra as Views persistentes de todos os eventos existentes.
 
-    for evento_id, evento in eventos.items():
+    O message_id é informado quando disponível para associar a View
+    diretamente ao painel antigo correspondente.
+    """
+    registrados = 0
+
+    for evento_id, evento in list(eventos.items()):
         try:
             mensagem_id = evento.get("mensagem_id")
 
@@ -1593,27 +1626,29 @@ async def registrar_views_persistentes():
                     PresencaView(evento_id),
                     message_id=int(mensagem_id)
                 )
-
                 print(
-                    f"🔘 View registrada: "
-                    f"evento={evento_id} | "
+                    f"🔘 View registrada: evento={evento_id} | "
                     f"mensagem={mensagem_id}"
                 )
             else:
                 bot.add_view(PresencaView(evento_id))
-
                 print(
-                    f"🔘 View registrada: "
-                    f"evento={evento_id} | "
+                    f"🔘 View registrada: evento={evento_id} | "
                     f"sem message_id"
                 )
 
+            registrados += 1
+
         except Exception as e:
             print(
-                f"❌ Erro ao registrar View do evento "
+                f"⚠️ Não foi possível registrar a View do evento "
                 f"{evento_id}: {e}"
             )
 
+    print(
+        f"🔘 Views persistentes registradas: "
+        f"{registrados}/{len(eventos)}."
+    )
 
 
 async def atualizar_paineis_ao_iniciar():
@@ -1881,56 +1916,6 @@ async def apagar_evento(ctx, *, argumentos=""):
 
 
 # ============================================================
-# BOT ONLINE
-# ============================================================
-
-# Evita repetir a inicialização sempre que o Discord reconecta.
-# As views persistentes e os painéis já registrados continuam válidos
-# durante reconexões e não precisam ser adicionados novamente.
-# ============================================================
-# INICIALIZAÇÃO DO BOT
-# ============================================================
-
-BOT_INICIALIZADO = False
-
-
-@bot.event
-async def on_ready():
-    global BOT_INICIALIZADO
-
-    print(f"🤖 Bot online como {bot.user}")
-
-    if BOT_INICIALIZADO:
-        return
-
-    BOT_INICIALIZADO = True
-
-    await sincronizar_emojis_classes()
-    await atualizar_paineis_ao_iniciar()
-
-    if not verificar_eventos.is_running():
-        verificar_eventos.start()
-        print("⏰ Sistema de avisos de eventos iniciado.")
-
-
-# ============================================================
-# REGISTRO DAS VIEWS PERSISTENTES
-# ============================================================
-
-async def setup_hook():
-    """
-    Registra as Views persistentes antes da conexão
-    completa do bot com o Gateway.
-    """
-    await registrar_views_persistentes()
-
-    print("🔘 Views persistentes registradas.")
-
-
-bot.setup_hook = setup_hook
-
-
-# ============================================================
 # DIAGNÓSTICO DAS INTERAÇÕES DOS BOTÕES
 # ============================================================
 
@@ -1947,7 +1932,63 @@ async def on_interaction(interaction):
 
 
 # ============================================================
+# SETUP DO BOT
+# ============================================================
+
+async def setup_hook():
+    """
+    Registra as Views persistentes antes da conexão completa
+    com o Gateway.
+    """
+    await registrar_views_persistentes()
+    print("🔘 Views persistentes registradas no setup_hook.")
+
+
+bot.setup_hook = setup_hook
+
+
+# ============================================================
+# BOT ONLINE
+# ============================================================
+
+BOT_INICIALIZADO = False
+
+
+@bot.event
+async def on_ready():
+    global BOT_INICIALIZADO
+
+    print(f"🤖 Bot online como {bot.user}")
+
+    # O Discord pode chamar on_ready novamente após uma reconexão.
+    # Evitamos reconstruir os painéis repetidamente.
+    if BOT_INICIALIZADO:
+        return
+
+    BOT_INICIALIZADO = True
+
+    await sincronizar_emojis_classes()
+
+    # Remove primeiro os eventos que já passaram de 2 horas.
+    await finalizar_eventos_expirados()
+
+    # Reconstroi os painéis dos eventos que ainda estão ativos/futuros.
+    await atualizar_paineis_ao_iniciar()
+
+    if not verificar_eventos.is_running():
+        verificar_eventos.start()
+        print("⏰ Sistema de avisos e finalização de eventos iniciado.")
+
+
+# ============================================================
 # INICIAR BOT
 # ============================================================
+
+TOKEN = os.getenv("TOKEN")
+
+if not TOKEN:
+    raise RuntimeError(
+        "❌ A variável de ambiente TOKEN não foi encontrada na Railway."
+    )
 
 bot.run(TOKEN)
