@@ -1855,9 +1855,25 @@ async def apagar_evento(ctx, *, argumentos=""):
 # BOT ONLINE
 # ============================================================
 
+# Evita repetir a inicialização sempre que o Discord reconecta.
+# As views persistentes e os painéis já registrados continuam válidos
+# durante reconexões e não precisam ser adicionados novamente.
+BOT_INICIALIZADO = False
+
+
 @bot.event
 async def on_ready():
+    global BOT_INICIALIZADO
+
     print(f"🤖 Bot online como {bot.user}")
+
+    # O Discord pode chamar on_ready novamente após uma reconexão.
+    # Não devemos registrar as mesmas views nem editar todos os painéis
+    # repetidamente, pois isso pode duplicar handlers de interação.
+    if BOT_INICIALIZADO:
+        return
+
+    BOT_INICIALIZADO = True
 
     await sincronizar_emojis_classes()
     await registrar_views_persistentes()
