@@ -71,7 +71,7 @@ CLASSES = [
     {"nome": "Algoz",              "arquivo": "SINX.webp",           "fallback": "🗡️"},
     {"nome": "Desordeiro",         "arquivo": "STALKER.webp",        "fallback": "🗝️"},
     {"nome": "Cigana",             "arquivo": "DANCER.webp",         "fallback": "💃"},
-    {"nome": "Bardo",              "arquivo": "MENESTREL.png",       "fallback": "🎻"},
+    {"nome": "Menestrel",          "arquivo": "MENESTREL.png",       "fallback": "🎻"},
     {"nome": "Atirador de Elite",  "arquivo": "SNIPER.webp",         "fallback": "🏹"},
     {"nome": "Professor",          "arquivo": "PROFESSOR.webp",      "fallback": "📘"},
     {"nome": "Arquimago",          "arquivo": "WIZARD.webp",         "fallback": "🔥"},
@@ -93,6 +93,9 @@ EMOJIS_CLASSES = {}
 
 LIMITE_PT = 12
 FUSO_HORARIO = ZoneInfo("America/Sao_Paulo")
+
+# Depois de 2 horas do início, o evento é finalizado automaticamente.
+TEMPO_FINALIZACAO_EVENTO = timedelta(hours=2)
 
 # Banner exibido no rodapé de todos os painéis de evento.
 # Deixe como None para não mostrar imagem nenhuma.
@@ -979,12 +982,99 @@ async def verificar_eventos_10_minutos():
 
 
 # ============================================================
+# FINALIZAR EVENTOS EXPIRADOS
+# ============================================================
+
+async def finalizar_eventos_expirados():
+    """
+    Remove automaticamente o painel do Discord 2 horas após o início
+    do evento e apaga o evento do arquivo eventos.json.
+
+    Se a mensagem já tiver sido apagada manualmente, o evento também é
+    finalizado normalmente. Se o bot não conseguir acessar o canal, ele
+    mantém o evento salvo para tentar novamente no próximo ciclo.
+    """
+    agora = horario_atual()
+
+    for evento_id, evento in list(eventos.items()):
+        horario_inicio_str = evento.get("horario_inicio")
+
+        if not horario_inicio_str:
+            continue
+
+        try:
+            horario_inicio = datetime.fromisoformat(horario_inicio_str)
+        except Exception:
+            continue
+
+        horario_finalizacao = horario_inicio + TEMPO_FINALIZACAO_EVENTO
+
+        if agora < horario_finalizacao:
+            continue
+
+        canal_id = evento.get("canal_id")
+        mensagem_id = evento.get("mensagem_id")
+        canal = bot.get_channel(canal_id) if canal_id else None
+
+        # Sem canal, não removemos do JSON ainda: tentamos novamente
+        # no próximo ciclo para garantir que o painel seja apagado.
+        if canal is None:
+            print(
+                f"⚠️ Canal não encontrado para finalizar o evento "
+                f"{evento_id}. Tentaremos novamente."
+            )
+            continue
+
+        try:
+            if mensagem_id:
+                try:
+                    mensagem = await canal.fetch_message(int(mensagem_id))
+                    await mensagem.delete()
+                    print(
+                        f"🗑️ Painel do evento {evento_id} apagado "
+                        f"após 2 horas."
+                    )
+                except discord.NotFound:
+                    # Já foi apagado manualmente. Tudo certo.
+                    print(
+                        f"ℹ️ Painel do evento {evento_id} já não existia "
+                        f"no Discord."
+                    )
+
+            nome_evento = evento.get("nome_evento", "Evento")
+            del eventos[evento_id]
+            salvar_eventos()
+
+            print(
+                f"🏁 Evento finalizado automaticamente: "
+                f"{nome_evento} (ID {evento_id})"
+            )
+
+        except discord.Forbidden:
+            print(
+                f"❌ Sem permissão para apagar o painel do evento "
+                f"{evento_id}. O evento será tentado novamente."
+            )
+        except discord.HTTPException as e:
+            print(
+                f"❌ Erro do Discord ao finalizar o evento "
+                f"{evento_id}: {e}. Tentaremos novamente."
+            )
+        except Exception as e:
+            print(
+                f"❌ Erro ao finalizar o evento {evento_id}: {e}. "
+                f"Tentaremos novamente."
+            )
+
+
+# ============================================================
 # LOOP DE VERIFICAÇÃO
 # ============================================================
 
 @tasks.loop(seconds=30)
 async def verificar_eventos():
     await verificar_eventos_10_minutos()
+    await finalizar_eventos_expirados()
 
 
 # ============================================================
