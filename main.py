@@ -1613,7 +1613,7 @@ async def registrar_views_persistentes():
                 f"❌ Erro ao registrar View do evento "
                 f"{evento_id}: {e}"
             )
-            )
+
 
 
 async def atualizar_paineis_ao_iniciar():
