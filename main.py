@@ -1885,6 +1885,23 @@ async def on_ready():
 
 
 # ============================================================
+# DIAGNÓSTICO DAS INTERAÇÕES DOS BOTÕES
+# ============================================================
+
+@bot.event
+async def on_interaction(interaction):
+    if interaction.type == discord.InteractionType.component:
+        custom_id = (interaction.data or {}).get("custom_id")
+
+        print(
+            f"🧩 INTERAÇÃO RECEBIDA | "
+            f"usuário={interaction.user} | "
+            f"custom_id={custom_id}"
+        )
+
+
+
+# ============================================================
 # INICIAR BOT
 # ============================================================
 
