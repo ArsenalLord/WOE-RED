@@ -1152,18 +1152,58 @@ class ClasseSelect(discord.ui.Select):
         # ENTRAR NA RESERVA
         # ====================================================
         if self.tipo == "reserva":
+            # Se já está na PT, o botão Reserva faz a troca diretamente:
+            # mantém a classe, sai da PT e entra no final da fila de reservas.
             if self_user in evento.get("presentes", {}):
-                if usuario_esta_em_reserva(evento, self_user):
-                    await interaction.response.send_message(
-                        "⚠️ Você já está na lista de reservas.",
-                        ephemeral=True
+                dados = normalizar_participante(
+                    self_user,
+                    evento["presentes"][self_user]
+                )
+                classe = dados["classe"]
+
+                # Só existe promoção automática quando a PT estava cheia
+                # (12 pessoas) antes da saída. Se havia 10 ou 11, a vaga
+                # permanece aberta e ninguém da reserva sobe.
+                pt_antes, _ = separar_participantes(evento)
+                havia_pt_cheia = len(pt_antes) == LIMITE_PT
+
+                evento.setdefault("presentes", {}).pop(self_user, None)
+
+                # Libera a vaga para quem já estava esperando na reserva
+                # somente se a PT estava cheia antes da saída.
+                proximo_promovido = (
+                    promover_proxima_reserva(evento)
+                    if havia_pt_cheia
+                    else None
+                )
+
+                agora = horario_atual()
+                evento.setdefault("reservas", {})[self_user] = {
+                    "classe": classe,
+                    "horario": agora.isoformat()
+                }
+
+                salvar_eventos()
+
+                mensagem_promocao = ""
+                if proximo_promovido:
+                    nome_promovido = proximo_promovido.get("nome", "Jogador")
+                    mensagem_promocao = (
+                        f"\n\n🟢 A vaga foi preenchida por **{nome_promovido}** "
+                        "da reserva."
                     )
-                    return
 
                 await interaction.response.send_message(
-                    "⚠️ Você já faz parte da PT. Use '❌ Não vou' para sair da PT.",
+                    (
+                        f"🟡 Você saiu da **PT** e entrou na **RESERVA** como "
+                        f"**{classe}** às **{agora.strftime('%H:%M')}**.\n\n"
+                        "📋 Você ficou no final da fila de reservas."
+                        f"{mensagem_promocao}"
+                    ),
                     ephemeral=True
                 )
+
+                await atualizar_mensagem(self.evento_id, interaction.channel)
                 return
 
             if self_user in evento.get("reservas", {}):
@@ -1225,7 +1265,7 @@ class ClasseSelect(discord.ui.Select):
         salvar_eventos()
 
         proximo_promovido = None
-        if len(pt_antes) > len(separar_participantes(evento)[0]):
+        if havia_pt_cheia:
             proximo_promovido = promover_proxima_reserva(evento)
 
         promovidos = [proximo_promovido] if proximo_promovido else []
@@ -1390,16 +1430,52 @@ class EventoButton(discord.ui.Button):
         # ----------------------------------------------------
         if self.tipo == "reserva":
             if user_id in evento.get("presentes", {}):
-                if usuario_esta_em_reserva(evento, user_id):
-                    await interaction.response.send_message(
-                        "⚠️ Você já está na lista de reservas.",
-                        ephemeral=True
+                dados = normalizar_participante(
+                    user_id,
+                    evento["presentes"][user_id]
+                )
+                classe = dados["classe"]
+
+                # Só promove alguém da reserva se a PT estava cheia
+                # (12 pessoas) antes da saída. Com 10 ou 11 pessoas,
+                # a vaga não deve ser preenchida automaticamente.
+                pt_antes, _ = separar_participantes(evento)
+                havia_pt_cheia = len(pt_antes) == LIMITE_PT
+
+                evento.setdefault("presentes", {}).pop(user_id, None)
+                proximo_promovido = (
+                    promover_proxima_reserva(evento)
+                    if havia_pt_cheia
+                    else None
+                )
+
+                agora = horario_atual()
+                evento.setdefault("reservas", {})[user_id] = {
+                    "classe": classe,
+                    "horario": agora.isoformat()
+                }
+
+                salvar_eventos()
+
+                mensagem_promocao = ""
+                if proximo_promovido:
+                    nome_promovido = proximo_promovido.get("nome", "Jogador")
+                    mensagem_promocao = (
+                        f"\n\n🟢 A vaga foi preenchida por **{nome_promovido}** "
+                        "da reserva."
                     )
-                else:
-                    await interaction.response.send_message(
-                        "⚠️ Você já faz parte da PT. Use '❌ Não vou' para sair.",
-                        ephemeral=True
-                    )
+
+                await interaction.response.send_message(
+                    (
+                        f"🟡 Você saiu da **PT** e entrou na **RESERVA** como "
+                        f"**{classe}** às **{agora.strftime('%H:%M')}**.\n\n"
+                        "📋 Você ficou no final da fila de reservas."
+                        f"{mensagem_promocao}"
+                    ),
+                    ephemeral=True
+                )
+
+                await atualizar_mensagem(self.evento_id, interaction.channel)
                 return
 
             if user_id in evento.get("reservas", {}):
@@ -1484,7 +1560,8 @@ class EventoButton(discord.ui.Button):
 
         agora = horario_atual()
         pt_antes, _ = separar_participantes(evento)
-        ids_pt_antes = {p["user_id"] for p in pt_antes}
+        # A promoção automática só acontece quando a PT estava cheia.
+        havia_pt_cheia = len(pt_antes) == LIMITE_PT
 
         evento.setdefault("presentes", {}).pop(user_id, None)
         evento.setdefault("reservas", {}).pop(user_id, None)
