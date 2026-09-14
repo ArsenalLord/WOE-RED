@@ -2449,7 +2449,7 @@ async def criar_torre(ctx, *, argumentos=""):
 # ============================================================
 
 @bot.command(name="limpar_texto")
-@commands.has_permissions(administrator=True)
+@commands.has_permissions(send_messages=True)
 async def limpar_texto(ctx):
     """
     Limpa as mensagens antigas enviadas pelo bot no canal atual.
@@ -2507,7 +2507,7 @@ async def limpar_texto(ctx):
 async def limpar_texto_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send(
-            "❌ Você precisa ser **Administrador** para usar este comando.",
+            "❌ Você precisa ter permissão para **Enviar mensagens** nesta sala para usar este comando.",
             delete_after=5
         )
 
