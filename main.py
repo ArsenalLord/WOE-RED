@@ -63,6 +63,39 @@ else:
 
 
 # ============================================================
+# PAINÉIS FIXOS DAS SALAS
+# ============================================================
+
+ARQUIVO_PAINEIS = os.getenv("PAINEIS_FILE", "/data/paineis.json")
+
+# Nomes exatos das três salas. O preset é definido automaticamente pela sala.
+SALAS_EVENTOS = {
+    "eventos": "padrao",
+    "esgoto-real": "esgoto",
+    "torre-sem-fim": "torre",
+}
+
+try:
+    if os.path.exists(ARQUIVO_PAINEIS):
+        with open(ARQUIVO_PAINEIS, "r", encoding="utf-8") as f:
+            paineis = json.load(f)
+    else:
+        paineis = {}
+except Exception:
+    paineis = {}
+
+if not isinstance(paineis, dict):
+    paineis = {}
+
+
+def salvar_paineis():
+    pasta = os.path.dirname(os.path.abspath(ARQUIVO_PAINEIS))
+    os.makedirs(pasta, exist_ok=True)
+    with open(ARQUIVO_PAINEIS, "w", encoding="utf-8") as f:
+        json.dump(paineis, f, indent=4, ensure_ascii=False)
+
+
+# ============================================================
 # CONFIGURAÇÕES
 # ============================================================
 
@@ -266,6 +299,7 @@ def migrar_eventos_antigos():
         evento.setdefault("mensagem_id", None)
         evento.setdefault("canal_id", None)
         evento.setdefault("aviso_10_minutos", False)
+        evento.setdefault("mensagem_ids", [])
         evento.setdefault("tipo", TIPO_PADRAO)
 
         # Reservas manuais não existiam no formato antigo.
@@ -992,7 +1026,10 @@ TEMPO_FINALIZACAO_EVENTO = timedelta(hours=2)
 
 async def finalizar_eventos_expirados():
     """
-    Finaliza cada evento 2 horas após o horário de início.
+    Finaliza cada evento exatamente 2 horas após o horário de início.
+
+    Além do painel do evento, apaga as mensagens públicas do bot que
+    pertencem àquele evento. O painel fixo da sala nunca é apagado.
     """
     agora = horario_atual()
 
@@ -1023,25 +1060,35 @@ async def finalizar_eventos_expirados():
                 except discord.NotFound:
                     canal = None
 
-            if canal is not None and mensagem_id:
+            if canal is not None:
+                # Apaga todas as mensagens públicas do bot marcadas para este
+                # evento. Isso funciona mesmo com vários eventos na mesma sala.
+                marca = marcador_evento(evento_id)
                 try:
-                    mensagem = await canal.fetch_message(int(mensagem_id))
-                    await mensagem.delete()
+                    async for msg in canal.history(limit=500):
+                        if msg.author.id != bot.user.id:
+                            continue
+                        if msg.id == mensagem_id or marca in (msg.content or ""):
+                            try:
+                                await msg.delete()
+                            except (
+                                discord.NotFound,
+                                discord.Forbidden,
+                                discord.HTTPException
+                            ):
+                                pass
+                except (discord.Forbidden, discord.HTTPException) as e:
                     print(
-                        f"🗑️ Painel apagado após 2h: "
-                        f"{nome_evento} | ID={evento_id}"
+                        f"⚠️ Não consegui limpar mensagens do evento "
+                        f"{evento_id}: {e}"
                     )
-                except discord.NotFound:
-                    print(
-                        f"🗑️ Painel já não existia: "
-                        f"{nome_evento} | ID={evento_id}"
-                    )
+                    raise
 
             eventos.pop(evento_id, None)
             salvar_eventos()
 
             print(
-                f"🏁 Evento finalizado: "
+                f"🏁 Evento finalizado e mensagens limpas: "
                 f"{nome_evento} | ID={evento_id}"
             )
 
@@ -1070,6 +1117,318 @@ async def finalizar_eventos_expirados():
 async def verificar_eventos():
     await verificar_eventos_10_minutos()
     await finalizar_eventos_expirados()
+
+
+# ============================================================
+# PAINEL FIXO / CRIAÇÃO POR FORMULÁRIO
+# ============================================================
+
+EVENTO_MARCADOR_PREFIXO = "\u200b[EVENTO:"
+EVENTO_MARCADOR_SUFIXO = "]\u200b"
+
+
+def marcador_evento(evento_id):
+    return (
+        f"{EVENTO_MARCADOR_PREFIXO}{evento_id}"
+        f"{EVENTO_MARCADOR_SUFIXO}"
+    )
+
+
+async def responder_evento(interaction, evento_id, *args, **kwargs):
+    """
+    Responde no canal, como solicitado pelo administrador, mas acrescenta
+    um marcador invisível para o bot conseguir apagar essa mensagem quando
+    o evento terminar.
+    """
+    kwargs.pop("ephemeral", None)
+
+    args = list(args)
+    if args and isinstance(args[0], str):
+        args[0] += marcador_evento(evento_id)
+    elif "content" in kwargs and isinstance(kwargs["content"], str):
+        kwargs["content"] += marcador_evento(evento_id)
+
+    return await interaction.response.send_message(
+        *args,
+        ephemeral=False,
+        **kwargs
+    )
+
+
+class CriarEventoModal(discord.ui.Modal):
+    def __init__(self, tipo):
+        preset = TIPOS_EVENTO.get(tipo, TIPOS_EVENTO[TIPO_PADRAO])
+        super().__init__(
+            title=f"Criar {preset['rotulo']}"[:45],
+            timeout=300
+        )
+        self.tipo = tipo
+
+        if tipo == "padrao":
+            self.nome = discord.ui.TextInput(
+                label="Nome do evento",
+                placeholder="Ex.: Guerra do Emperium",
+                required=True,
+                max_length=80
+            )
+            self.add_item(self.nome)
+
+        self.data = discord.ui.TextInput(
+            label="Data",
+            placeholder="DD/MM/AAAA",
+            required=True,
+            max_length=10
+        )
+        self.horario = discord.ui.TextInput(
+            label="Horário",
+            placeholder="HH:MM",
+            required=True,
+            max_length=5
+        )
+        self.add_item(self.data)
+        self.add_item(self.horario)
+
+    async def on_submit(self, interaction):
+        preset = TIPOS_EVENTO.get(self.tipo, TIPOS_EVENTO[TIPO_PADRAO])
+
+        if self.tipo == "padrao":
+            nome_evento = str(self.nome.value).strip()
+        else:
+            nome_evento = preset["nome_padrao"]
+
+        data = str(self.data.value).strip()
+        horario = str(self.horario.value).strip()
+
+        data_hora = converter_data_evento(data, horario)
+
+        if data_hora is None:
+            await interaction.response.send_message(
+                "❌ Data ou horário inválido. Use `DD/MM/AAAA` e `HH:MM`.",
+                ephemeral=True
+            )
+            return
+
+        if data_hora <= horario_atual():
+            await interaction.response.send_message(
+                "❌ O horário do evento precisa ser no futuro.",
+                ephemeral=True
+            )
+            return
+
+        if encontrar_evento_por_nome_data(nome_evento, data, horario):
+            await interaction.response.send_message(
+                "⚠️ Já existe um evento com o mesmo nome, data e horário.",
+                ephemeral=True
+            )
+            return
+
+        evento_id = gerar_evento_id()
+
+        eventos[evento_id] = {
+            "evento_id": evento_id,
+            "nome_evento": nome_evento,
+            "tipo": self.tipo,
+            "presentes": {},
+            "reservas": {},
+            "nao_vou": {},
+            "horario_inicio": data_hora.isoformat(),
+            "canal_id": interaction.channel.id,
+            "mensagem_id": None,
+            "aviso_10_minutos": False,
+            "mensagem_ids": [],
+        }
+
+        salvar_eventos()
+
+        mensagem = await interaction.channel.send(
+            embed=criar_embed_evento(eventos[evento_id]),
+            view=PresencaView(evento_id)
+        )
+
+        eventos[evento_id]["mensagem_id"] = mensagem.id
+        eventos[evento_id]["mensagem_ids"] = [mensagem.id]
+        salvar_eventos()
+
+        await responder_evento(interaction, evento_id,
+            (
+                f"✅ **{preset['rotulo']}** criado com sucesso!\n"
+                f"📅 {formatar_data_horario(data_hora.isoformat())}\n"
+                f"🆔 ID: `{evento_id}`"
+            ),
+            ephemeral=True
+        )
+
+
+class CriarEventoButton(discord.ui.Button):
+    def __init__(self, tipo):
+        preset = TIPOS_EVENTO.get(tipo, TIPOS_EVENTO[TIPO_PADRAO])
+        super().__init__(
+            label=f"Criar {preset['rotulo']}"[:80],
+            style=discord.ButtonStyle.primary,
+            emoji="➕",
+            custom_id=f"painel_criar:{tipo}"
+        )
+        self.tipo = tipo
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(
+            CriarEventoModal(self.tipo)
+        )
+
+
+class PainelFixoView(discord.ui.View):
+    def __init__(self, tipo):
+        super().__init__(timeout=None)
+        self.add_item(CriarEventoButton(tipo))
+
+
+def criar_embed_painel(tipo):
+    preset = TIPOS_EVENTO.get(tipo, TIPOS_EVENTO[TIPO_PADRAO])
+
+    embed = discord.Embed(
+        title=f"⚙️  PAINEL DE {preset['rotulo'].upper()}",
+        description=(
+            f"Use este painel para criar um novo evento de "
+            f"**{preset['rotulo']}**.\n\n"
+            "📅 Informe a data e o horário no formulário.\n"
+            "👥 Cada evento possui sua própria PT e reserva.\n"
+            "🗑️ O evento é removido automaticamente após 2 horas."
+        ),
+        color=0x5865F2
+    )
+    if preset.get("thumbnail"):
+        embed.set_thumbnail(url=preset["thumbnail"])
+
+    embed.set_footer(text=f"PAINEL_FIXO:{tipo}")
+    return embed
+
+
+def tipo_da_sala(canal):
+    nome = (getattr(canal, "name", "") or "").casefold()
+    return SALAS_EVENTOS.get(nome)
+
+
+async def garantir_paineis_fixos():
+    """
+    Garante um único painel fixo em cada uma das três salas.
+    Não cria outro se já houver um painel com o mesmo marcador.
+    """
+    for nome_sala, tipo in SALAS_EVENTOS.items():
+        canal = discord.utils.find(
+            lambda c: isinstance(c, discord.TextChannel)
+            and (c.name or "").casefold() == nome_sala,
+            bot.get_all_channels()
+        )
+
+        if canal is None:
+            print(f"⚠️ Sala não encontrada: #{nome_sala}")
+            continue
+
+        mensagem_id = paineis.get(nome_sala)
+        mensagem = None
+
+        if mensagem_id:
+            try:
+                mensagem = await canal.fetch_message(int(mensagem_id))
+            except (discord.NotFound, discord.HTTPException):
+                mensagem = None
+
+        if mensagem is None:
+            try:
+                async for msg in canal.history(limit=100):
+                    if not msg.embeds:
+                        continue
+                    footer = msg.embeds[0].footer.text or ""
+                    if footer == f"PAINEL_FIXO:{tipo}":
+                        mensagem = msg
+                        break
+            except (discord.Forbidden, discord.HTTPException) as e:
+                print(f"⚠️ Não consegui procurar painel em #{nome_sala}: {e}")
+
+        if mensagem is None:
+            try:
+                mensagem = await canal.send(
+                    embed=criar_embed_painel(tipo),
+                    view=PainelFixoView(tipo)
+                )
+                print(f"⚙️ Painel criado em #{nome_sala}.")
+            except Exception as e:
+                print(f"❌ Erro ao criar painel em #{nome_sala}: {e}")
+                continue
+        else:
+            try:
+                await mensagem.edit(
+                    embed=criar_embed_painel(tipo),
+                    view=PainelFixoView(tipo)
+                )
+            except Exception as e:
+                print(f"⚠️ Erro ao atualizar painel em #{nome_sala}: {e}")
+
+        paineis[nome_sala] = mensagem.id
+        salvar_paineis()
+
+        try:
+            bot.add_view(
+                PainelFixoView(tipo),
+                message_id=int(mensagem.id)
+            )
+        except Exception as e:
+            print(f"⚠️ Erro ao registrar painel #{nome_sala}: {e}")
+
+
+async def limpar_mensagens_antigas_das_salas():
+    """
+    Remove mensagens antigas do BOT nas três salas, preservando:
+    - o painel fixo;
+    - painéis de eventos que ainda estão ativos no JSON.
+    Mensagens humanas nunca são apagadas.
+    """
+    ids_preservados = {
+        int(v) for v in paineis.values()
+        if str(v).isdigit()
+    }
+
+    ids_eventos_ativos = {
+        int(evento["mensagem_id"])
+        for evento in eventos.values()
+        if evento.get("mensagem_id") and str(evento["mensagem_id"]).isdigit()
+    }
+    ids_preservados.update(ids_eventos_ativos)
+
+    for nome_sala in SALAS_EVENTOS:
+        canal = discord.utils.find(
+            lambda c: isinstance(c, discord.TextChannel)
+            and (c.name or "").casefold() == nome_sala,
+            bot.get_all_channels()
+        )
+        if canal is None:
+            continue
+
+        try:
+            async for msg in canal.history(limit=500):
+                if msg.id in ids_preservados:
+                    continue
+                if msg.author.id != bot.user.id:
+                    continue
+
+                # Não apaga o que estiver sendo usado por um evento ativo.
+                conteudo = msg.content or ""
+                if any(
+                    marcador in conteudo
+                    for marcador in (
+                        "PAINEL_FIXO:",
+                        *[f"[EVENTO:{eid}]" for eid in eventos]
+                    )
+                ):
+                    continue
+
+                try:
+                    await msg.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+
+        except (discord.Forbidden, discord.HTTPException) as e:
+            print(f"⚠️ Não consegui limpar #{nome_sala}: {e}")
 
 
 # ============================================================
@@ -1103,7 +1462,7 @@ class ClasseSelect(discord.ui.Select):
         evento = obter_evento(self.evento_id)
 
         if not evento:
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 "❌ Evento não encontrado.",
                 ephemeral=True
             )
@@ -1117,7 +1476,7 @@ class ClasseSelect(discord.ui.Select):
         # ====================================================
         if self.tipo == "presente":
             if self_user in evento.get("presentes", {}):
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está confirmado neste evento.",
                     ephemeral=True
                 )
@@ -1136,7 +1495,7 @@ class ClasseSelect(discord.ui.Select):
 
             salvar_eventos()
 
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 (
                     f"✅ Presença confirmada como **{escolha}** às "
                     f"**{agora.strftime('%H:%M')}**.\n\n"
@@ -1193,7 +1552,7 @@ class ClasseSelect(discord.ui.Select):
                         "da reserva."
                     )
 
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     (
                         f"🟡 Você saiu da **PT** e entrou na **RESERVA** como "
                         f"**{classe}** às **{agora.strftime('%H:%M')}**.\n\n"
@@ -1207,7 +1566,7 @@ class ClasseSelect(discord.ui.Select):
                 return
 
             if self_user in evento.get("reservas", {}):
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está na lista de reservas.",
                     ephemeral=True
                 )
@@ -1221,7 +1580,7 @@ class ClasseSelect(discord.ui.Select):
 
             salvar_eventos()
 
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 (
                     f"🟡 Você entrou na **RESERVA** como **{escolha}** às "
                     f"**{agora.strftime('%H:%M')}**.\n\n"
@@ -1237,7 +1596,7 @@ class ClasseSelect(discord.ui.Select):
         # NÃO VOU
         # ====================================================
         if self_user in evento.get("nao_vou", {}):
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 "⚠️ Você já está registrado como **Não vou**.",
                 ephemeral=True
             )
@@ -1251,7 +1610,7 @@ class ClasseSelect(discord.ui.Select):
         )
 
         pt_antes, _ = separar_participantes(evento)
-        ids_pt_antes = {p["user_id"] for p in pt_antes}
+        havia_pt_cheia = len(pt_antes) == LIMITE_PT
 
         # Remove da PT/presença ou da reserva manual.
         evento.setdefault("presentes", {}).pop(self_user, None)
@@ -1270,7 +1629,7 @@ class ClasseSelect(discord.ui.Select):
 
         promovidos = [proximo_promovido] if proximo_promovido else []
 
-        await interaction.response.send_message(
+        await responder_evento(interaction, self.evento_id, 
             (
                 f"❌ Sua ausência foi registrada às "
                 f"**{agora.strftime('%H:%M')}**.\n"
@@ -1292,6 +1651,7 @@ class ClasseSelect(discord.ui.Select):
                     f"🟢 **Novo membro da PT:**\n"
                     f"{mencoes}\n\n"
                     f"⚔️ **Você assumiu a vaga!**"
+                    f"{marcador_evento(self.evento_id)}"
                 )
             )
 
@@ -1337,7 +1697,7 @@ class EventoButton(discord.ui.Button):
         evento = obter_evento(self.evento_id)
 
         if not evento:
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 "❌ Este evento não existe mais.",
                 ephemeral=True
             )
@@ -1350,7 +1710,7 @@ class EventoButton(discord.ui.Button):
         # ----------------------------------------------------
         if self.tipo == "presente":
             if user_id in evento.get("presentes", {}):
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está confirmado neste evento.",
                     ephemeral=True
                 )
@@ -1374,7 +1734,7 @@ class EventoButton(discord.ui.Button):
 
                 salvar_eventos()
 
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     (
                         f"✅ Você voltou para a lista como **{classe}** às "
                         f"**{agora.strftime('%H:%M')}**.\n\n"
@@ -1403,7 +1763,7 @@ class EventoButton(discord.ui.Button):
 
                 salvar_eventos()
 
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     (
                         f"✅ Você saiu da reserva e entrou na fila de presença "
                         f"como **{classe}** às **{agora.strftime('%H:%M')}**."
@@ -1414,7 +1774,7 @@ class EventoButton(discord.ui.Button):
                 await atualizar_mensagem(self.evento_id, interaction.channel)
                 return
 
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 "Selecione sua classe:",
                 view=ClasseView(
                     self.evento_id,
@@ -1465,7 +1825,7 @@ class EventoButton(discord.ui.Button):
                         "da reserva."
                     )
 
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     (
                         f"🟡 Você saiu da **PT** e entrou na **RESERVA** como "
                         f"**{classe}** às **{agora.strftime('%H:%M')}**.\n\n"
@@ -1479,7 +1839,7 @@ class EventoButton(discord.ui.Button):
                 return
 
             if user_id in evento.get("reservas", {}):
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está na lista de reservas.",
                     ephemeral=True
                 )
@@ -1501,7 +1861,7 @@ class EventoButton(discord.ui.Button):
 
                 salvar_eventos()
 
-                await interaction.response.send_message(
+                await responder_evento(interaction, self.evento_id, 
                     (
                         f"🟡 Você entrou na **RESERVA** como **{classe}** às "
                         f"**{agora.strftime('%H:%M')}**.\n\n"
@@ -1513,7 +1873,7 @@ class EventoButton(discord.ui.Button):
                 await atualizar_mensagem(self.evento_id, interaction.channel)
                 return
 
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 "Selecione sua classe para entrar na reserva:",
                 view=ClasseView(
                     self.evento_id,
@@ -1528,7 +1888,7 @@ class EventoButton(discord.ui.Button):
         # NÃO VOU
         # ----------------------------------------------------
         if user_id in evento.get("nao_vou", {}):
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 "⚠️ Você já está registrado como **Não vou**.",
                 ephemeral=True
             )
@@ -1547,7 +1907,7 @@ class EventoButton(discord.ui.Button):
             )
             classe = dados["classe"]
         else:
-            await interaction.response.send_message(
+            await responder_evento(interaction, self.evento_id, 
                 "Selecione sua classe:",
                 view=ClasseView(
                     self.evento_id,
@@ -1578,7 +1938,7 @@ class EventoButton(discord.ui.Button):
 
         promovidos = [proximo_promovido] if proximo_promovido else []
 
-        await interaction.response.send_message(
+        await responder_evento(interaction, self.evento_id, 
             (
                 f"❌ Sua ausência foi registrada às "
                 f"**{agora.strftime('%H:%M')}**.\n"
@@ -1600,6 +1960,7 @@ class EventoButton(discord.ui.Button):
                     f"🟢 **Novo membro da PT:**\n"
                     f"{mencoes}\n\n"
                     f"⚔️ **Você assumiu a vaga!**"
+                    f"{marcador_evento(self.evento_id)}"
                 )
             )
 
@@ -1811,6 +2172,7 @@ def _extrair_evento_do_embed(msg):
         "horario_inicio": inicio_dt.isoformat(),
         "canal_id": msg.channel.id,
         "mensagem_id": msg.id,
+        "mensagem_ids": [msg.id],
         "aviso_10_minutos": False
     }
 
@@ -2019,6 +2381,7 @@ async def criar_evento_do_tipo(ctx, argumentos, tipo):
         "horario_inicio": data_hora.isoformat(),
         "canal_id": ctx.channel.id,
         "mensagem_id": None,
+        "mensagem_ids": [],
         "aviso_10_minutos": False
     }
 
@@ -2031,18 +2394,19 @@ async def criar_evento_do_tipo(ctx, argumentos, tipo):
     )
 
     eventos[evento_id]["mensagem_id"] = mensagem.id
+    eventos[evento_id]["mensagem_ids"] = [mensagem.id]
     salvar_eventos()
 
     await ctx.send(
         (
             f"✅ **{preset['rotulo']}** — **{nome_evento}** criado para "
             f"**{data_hora.strftime('%d/%m/%Y às %H:%M')}**.\n"
-            f"🆔 ID do evento: `{evento_id}`  ·  apague com `!apagar_evento {evento_id}`\n"
+            f"🆔 ID do evento: `{evento_id}`\n"
             f"🟢 A PT terá até {LIMITE_PT} membros.\n"
             "🟡 O botão **Entrar na Reserva** permite entrar diretamente "
             "na fila de reservas."
-        ),
-        delete_after=10
+            f"{marcador_evento(evento_id)}"
+        )
     )
 
 
@@ -2232,8 +2596,15 @@ async def on_ready():
     # Finaliza o que já passou de 2 horas.
     await finalizar_eventos_expirados()
 
-    # Reconstroi os painéis salvos.
+    # Reconstrói os painéis dos eventos salvos.
     await atualizar_paineis_ao_iniciar()
+
+    # Garante os três painéis fixos das salas.
+    await garantir_paineis_fixos()
+
+    # Limpa mensagens antigas do BOT nas salas, preservando
+    # os painéis fixos e os eventos ainda ativos.
+    await limpar_mensagens_antigas_das_salas()
 
     if not verificar_eventos.is_running():
         verificar_eventos.start()
