@@ -1136,21 +1136,18 @@ def marcador_evento(evento_id):
 
 async def responder_evento(interaction, evento_id, *args, **kwargs):
     """
-    Responde no canal, como solicitado pelo administrador, mas acrescenta
-    um marcador invisível para o bot conseguir apagar essa mensagem quando
-    o evento terminar.
+    Resposta privada ao usuário que clicou no botão.
+
+    Mensagens de confirmação, seleção de classe e avisos individuais
+    ficam apenas para quem realizou a ação, evitando poluir o canal.
+    Mensagens que precisam ser vistas por todos (como promoções e o
+    aviso de 10 minutos) continuam sendo enviadas diretamente pelo
+    canal e recebem o marcador do evento para limpeza posterior.
     """
     kwargs.pop("ephemeral", None)
-
-    args = list(args)
-    if args and isinstance(args[0], str):
-        args[0] += marcador_evento(evento_id)
-    elif "content" in kwargs and isinstance(kwargs["content"], str):
-        kwargs["content"] += marcador_evento(evento_id)
-
     return await interaction.response.send_message(
         *args,
-        ephemeral=False,
+        ephemeral=True,
         **kwargs
     )
 
@@ -2423,6 +2420,74 @@ async def criar_esgoto(ctx, *, argumentos=""):
 @bot.command(name="criar_torre")
 async def criar_torre(ctx, *, argumentos=""):
     await criar_evento_do_tipo(ctx, argumentos, "torre")
+
+
+# ============================================================
+# COMANDO LIMPAR TEXTO DO BOT
+# ============================================================
+
+@bot.command(name="limpar_texto")
+@commands.has_permissions(administrator=True)
+async def limpar_texto(ctx):
+    """
+    Limpa as mensagens antigas enviadas pelo bot no canal atual.
+
+    Preserva o painel fixo e os painéis dos eventos que ainda estão
+    cadastrados no JSON. Mensagens enviadas por usuários nunca são
+    apagadas.
+
+    Uso:
+        !limpar_texto
+    """
+    ids_preservados = {
+        int(v) for v in paineis.values()
+        if str(v).isdigit()
+    }
+
+    ids_eventos_ativos = {
+        int(evento["mensagem_id"])
+        for evento in eventos.values()
+        if evento.get("mensagem_id") and str(evento.get("mensagem_id")).isdigit()
+    }
+    ids_preservados.update(ids_eventos_ativos)
+
+    apagadas = 0
+
+    try:
+        async for msg in ctx.channel.history(limit=500):
+            if msg.id in ids_preservados:
+                continue
+
+            if msg.author.id != bot.user.id:
+                continue
+
+            try:
+                await msg.delete()
+                apagadas += 1
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+    except (discord.Forbidden, discord.HTTPException) as e:
+        print(f"⚠️ Erro ao limpar mensagens em #{ctx.channel.name}: {e}")
+
+    # Remove também a mensagem do próprio comando.
+    try:
+        await ctx.message.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+    await ctx.channel.send(
+        f"🧹 **Limpeza concluída.** {apagadas} mensagem(ns) antiga(s) do bot foram removida(s).",
+        delete_after=5
+    )
+
+
+@limpar_texto.error
+async def limpar_texto_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send(
+            "❌ Você precisa ser **Administrador** para usar este comando.",
+            delete_after=5
+        )
 
 
 # ============================================================
