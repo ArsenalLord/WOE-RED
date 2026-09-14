@@ -1227,21 +1227,24 @@ class CriarEventoModal(discord.ui.Modal):
         if data_hora is None:
             await interaction.response.send_message(
                 "❌ Data ou horário inválido. Use `DD/MM/AAAA` e `HH:MM`.",
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
         if data_hora <= horario_atual():
             await interaction.response.send_message(
                 "❌ O horário do evento precisa ser no futuro.",
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
         if encontrar_evento_por_nome_data(nome_evento, data, horario):
             await interaction.response.send_message(
                 "⚠️ Já existe um evento com o mesmo nome, data e horário.",
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1278,7 +1281,8 @@ class CriarEventoModal(discord.ui.Modal):
                 f"📅 {formatar_data_horario(data_hora.isoformat())}\n"
                 f"🆔 ID: `{evento_id}`"
             ),
-            ephemeral=True
+            ephemeral=True,
+            delete_after=5
         )
 
 
@@ -1487,7 +1491,8 @@ class ClasseSelect(discord.ui.Select):
         if not evento:
             await responder_evento(interaction, self.evento_id, 
                 "❌ Evento não encontrado.",
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1501,7 +1506,8 @@ class ClasseSelect(discord.ui.Select):
             if self_user in evento.get("presentes", {}):
                 await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está confirmado neste evento.",
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
                 return
 
@@ -1524,7 +1530,8 @@ class ClasseSelect(discord.ui.Select):
                     f"**{agora.strftime('%H:%M')}**.\n\n"
                     "📋 Sua posição será definida pela ordem de confirmação."
                 ),
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
 
             await atualizar_mensagem(self.evento_id, interaction.channel)
@@ -1582,7 +1589,8 @@ class ClasseSelect(discord.ui.Select):
                         "📋 Você ficou no final da fila de reservas."
                         f"{mensagem_promocao}"
                     ),
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
 
                 await atualizar_mensagem(self.evento_id, interaction.channel)
@@ -1591,7 +1599,8 @@ class ClasseSelect(discord.ui.Select):
             if self_user in evento.get("reservas", {}):
                 await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está na lista de reservas.",
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
                 return
 
@@ -1609,7 +1618,8 @@ class ClasseSelect(discord.ui.Select):
                     f"**{agora.strftime('%H:%M')}**.\n\n"
                     "📋 Você ficará no final da fila de reservas."
                 ),
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
 
             await atualizar_mensagem(self.evento_id, interaction.channel)
@@ -1621,7 +1631,8 @@ class ClasseSelect(discord.ui.Select):
         if self_user in evento.get("nao_vou", {}):
             await responder_evento(interaction, self.evento_id, 
                 "⚠️ Você já está registrado como **Não vou**.",
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1658,7 +1669,8 @@ class ClasseSelect(discord.ui.Select):
                 f"**{agora.strftime('%H:%M')}**.\n"
                 f"Classe: **{classe_final}**"
             ),
-            ephemeral=True
+            ephemeral=True,
+            delete_after=5
         )
 
         if promovidos:
@@ -1727,7 +1739,8 @@ class EventoButton(discord.ui.Button):
         if not evento:
             await responder_evento(interaction, self.evento_id, 
                 "❌ Este evento não existe mais.",
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1740,7 +1753,8 @@ class EventoButton(discord.ui.Button):
             if user_id in evento.get("presentes", {}):
                 await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está confirmado neste evento.",
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
                 return
 
@@ -1768,7 +1782,8 @@ class EventoButton(discord.ui.Button):
                         f"**{agora.strftime('%H:%M')}**.\n\n"
                         "📋 Você entrou novamente no final da fila."
                     ),
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
 
                 await atualizar_mensagem(self.evento_id, interaction.channel)
@@ -1796,7 +1811,8 @@ class EventoButton(discord.ui.Button):
                         f"✅ Você saiu da reserva e entrou na fila de presença "
                         f"como **{classe}** às **{agora.strftime('%H:%M')}**."
                     ),
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
 
                 await atualizar_mensagem(self.evento_id, interaction.channel)
@@ -1809,7 +1825,8 @@ class EventoButton(discord.ui.Button):
                     user_id,
                     "presente"
                 ),
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1860,7 +1877,8 @@ class EventoButton(discord.ui.Button):
                         "📋 Você ficou no final da fila de reservas."
                         f"{mensagem_promocao}"
                     ),
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
 
                 await atualizar_mensagem(self.evento_id, interaction.channel)
@@ -1869,7 +1887,8 @@ class EventoButton(discord.ui.Button):
             if user_id in evento.get("reservas", {}):
                 await responder_evento(interaction, self.evento_id, 
                     "⚠️ Você já está na lista de reservas.",
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
                 return
 
@@ -1895,7 +1914,8 @@ class EventoButton(discord.ui.Button):
                         f"**{agora.strftime('%H:%M')}**.\n\n"
                         "📋 Você entrou no final da fila de reservas."
                     ),
-                    ephemeral=True
+                    ephemeral=True,
+                    delete_after=5
                 )
 
                 await atualizar_mensagem(self.evento_id, interaction.channel)
@@ -1908,7 +1928,8 @@ class EventoButton(discord.ui.Button):
                     user_id,
                     "reserva"
                 ),
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1918,7 +1939,8 @@ class EventoButton(discord.ui.Button):
         if user_id in evento.get("nao_vou", {}):
             await responder_evento(interaction, self.evento_id, 
                 "⚠️ Você já está registrado como **Não vou**.",
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1942,7 +1964,8 @@ class EventoButton(discord.ui.Button):
                     user_id,
                     "nao_vou"
                 ),
-                ephemeral=True
+                ephemeral=True,
+                delete_after=5
             )
             return
 
@@ -1972,7 +1995,8 @@ class EventoButton(discord.ui.Button):
                 f"**{agora.strftime('%H:%M')}**.\n"
                 f"Classe: **{classe}**"
             ),
-            ephemeral=True
+            ephemeral=True,
+            delete_after=5
         )
 
         if promovidos:
