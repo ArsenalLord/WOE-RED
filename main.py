@@ -1004,7 +1004,16 @@ async def verificar_eventos_10_minutos():
                 )
 
             try:
-                await canal.send(mensagem)
+                # Menções reais aos membros da PT.
+                # allowed_mentions garante que o Discord processe os <@ID>.
+                await canal.send(
+                    f"{marcador_evento(evento_id)} {mensagem}",
+                    allowed_mentions=discord.AllowedMentions(
+                        users=True,
+                        roles=False,
+                        everyone=False
+                    )
+                )
                 evento["aviso_10_minutos"] = True
                 salvar_eventos()
 
@@ -1115,8 +1124,21 @@ async def finalizar_eventos_expirados():
 
 @tasks.loop(seconds=30)
 async def verificar_eventos():
-    await verificar_eventos_10_minutos()
-    await finalizar_eventos_expirados()
+    # Uma falha em uma verificação nunca deve matar o loop inteiro.
+    try:
+        await verificar_eventos_10_minutos()
+    except Exception as e:
+        print(f"❌ Erro no sistema de aviso de 10 minutos: {e}")
+
+    try:
+        await finalizar_eventos_expirados()
+    except Exception as e:
+        print(f"❌ Erro no sistema de finalização: {e}")
+
+
+@verificar_eventos.before_loop
+async def antes_de_verificar_eventos():
+    await bot.wait_until_ready()
 
 
 # ============================================================
