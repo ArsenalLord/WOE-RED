@@ -1006,6 +1006,10 @@ async def verificar_eventos_10_minutos():
             try:
                 # Menções reais aos membros da PT.
                 # allowed_mentions garante que o Discord processe os <@ID>.
+                # Menções REAIS: o Discord vai notificar cada integrante
+                # atualmente presente na PT deste evento.
+                # A lista é montada novamente no momento do aviso, então
+                # quem saiu da PT antes dos 10 minutos não será mencionado.
                 await canal.send(
                     f"{marcador_evento(evento_id)} {mensagem}",
                     allowed_mentions=discord.AllowedMentions(
@@ -1671,6 +1675,11 @@ class ClasseSelect(discord.ui.Select):
                     f"{mencoes}\n\n"
                     f"⚔️ **Você assumiu a vaga!**"
                     f"{marcador_evento(self.evento_id)}"
+                ),
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False
                 )
             )
 
@@ -1980,6 +1989,11 @@ class EventoButton(discord.ui.Button):
                     f"{mencoes}\n\n"
                     f"⚔️ **Você assumiu a vaga!**"
                     f"{marcador_evento(self.evento_id)}"
+                ),
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False
                 )
             )
 
