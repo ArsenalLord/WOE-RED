@@ -2467,19 +2467,9 @@ async def criar_evento_do_tipo(ctx, argumentos, tipo):
     )
 
 
-@bot.command(name="criar_evento")
-async def criar_evento(ctx, *, argumentos=""):
-    await criar_evento_do_tipo(ctx, argumentos, "padrao")
-
-
-@bot.command(name="criar_esgoto")
-async def criar_esgoto(ctx, *, argumentos=""):
-    await criar_evento_do_tipo(ctx, argumentos, "esgoto")
-
-
-@bot.command(name="criar_torre")
-async def criar_torre(ctx, *, argumentos=""):
-    await criar_evento_do_tipo(ctx, argumentos, "torre")
+# Os comandos antigos de criação por texto foram desativados.
+# A criação de eventos agora é feita exclusivamente pelos painéis
+# fixos e pelo formulário (modal) dos canais de eventos.
 
 
 # ============================================================
