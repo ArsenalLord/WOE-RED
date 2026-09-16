@@ -1267,8 +1267,14 @@ class CriarEventoModal(discord.ui.Modal):
         salvar_eventos()
 
         mensagem = await interaction.channel.send(
+            content=f"{marcador_evento(evento_id)} @everyone",
             embed=criar_embed_evento(eventos[evento_id]),
-            view=PresencaView(evento_id)
+            view=PresencaView(evento_id),
+            allowed_mentions=discord.AllowedMentions(
+                everyone=True,
+                users=False,
+                roles=False
+            )
         )
 
         eventos[evento_id]["mensagem_id"] = mensagem.id
