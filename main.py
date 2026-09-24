@@ -1509,14 +1509,10 @@ class ClasseSelect(discord.ui.Select):
         # CONFIRMAR PRESENÇA / DEFINIR CLASSE
         # ====================================================
         if self.tipo == "presente":
-            if self_user in evento.get("presentes", {}):
-                await responder_evento(interaction, self.evento_id, 
-                    "⚠️ Você já está confirmado neste evento.",
-                    ephemeral=True,
-                    delete_after=5
-                )
-                return
-
+            # O usuário já foi colocado na PT no momento em que clicou
+            # em "Marcar Presença". Portanto, aqui NÃO podemos tratar
+            # isso como duplicidade: esta etapa serve justamente para
+            # registrar a classe sem alterar a posição conquistada.
             dados_atuais = evento.setdefault("presentes", {}).get(self_user)
 
             if dados_atuais is None:
