@@ -1506,7 +1506,7 @@ class ClasseSelect(discord.ui.Select):
         self_user = self.user_id
 
         # ====================================================
-        # CONFIRMAR PRESENÇA
+        # CONFIRMAR PRESENÇA / DEFINIR CLASSE
         # ====================================================
         if self.tipo == "presente":
             if self_user in evento.get("presentes", {}):
@@ -1517,24 +1517,42 @@ class ClasseSelect(discord.ui.Select):
                 )
                 return
 
-            # Se estava em reserva manual, volta para a fila de presença.
+            dados_atuais = evento.setdefault("presentes", {}).get(self_user)
+
+            if dados_atuais is None:
+                # Compatibilidade: se a interação de classe veio de um fluxo
+                # antigo, registra agora. Para o fluxo novo isso não acontece,
+                # pois a posição já foi reservada no clique inicial.
+                evento["presentes"][self_user] = {
+                    "classe": escolha,
+                    "horario": agora.isoformat()
+                }
+            else:
+                dados_atuais = normalizar_participante(
+                    self_user,
+                    dados_atuais
+                )
+                # IMPORTANTE: mantém o horário original do clique em
+                # "Marcar Presença". Somente a classe é alterada.
+                evento["presentes"][self_user] = {
+                    "classe": escolha,
+                    "horario": dados_atuais.get("horario") or agora.isoformat()
+                }
+
+            # Se estava em alguma lista antiga, remove os registros
+            # duplicados, sem mexer na posição já reservada.
             evento.setdefault("reservas", {}).pop(self_user, None)
-
-            # Se estava como NÃO VOU, retorna ao final da fila mantendo a classe escolhida.
             evento.setdefault("nao_vou", {}).pop(self_user, None)
-
-            evento.setdefault("presentes", {})[self_user] = {
-                "classe": escolha,
-                "horario": agora.isoformat()
-            }
 
             salvar_eventos()
 
-            await responder_evento(interaction, self.evento_id, 
+            await responder_evento(
+                interaction,
+                self.evento_id,
                 (
-                    f"✅ Presença confirmada como **{escolha}** às "
-                    f"**{agora.strftime('%H:%M')}**.\n\n"
-                    "📋 Sua posição será definida pela ordem de confirmação."
+                    f"✅ Classe **{escolha}** registrada!\n\n"
+                    "📋 Sua posição na PT foi mantida pelo horário em que "
+                    "você marcou presença."
                 ),
                 ephemeral=True,
                 delete_after=5
@@ -1757,11 +1775,34 @@ class EventoButton(discord.ui.Button):
         # ----------------------------------------------------
         if self.tipo == "presente":
             if user_id in evento.get("presentes", {}):
-                await responder_evento(interaction, self.evento_id, 
-                    "⚠️ Você já está confirmado neste evento.",
-                    ephemeral=True,
-                    delete_after=5
+                dados = normalizar_participante(
+                    user_id,
+                    evento["presentes"][user_id]
                 )
+
+                if dados["classe"] == "Aguardando classe":
+                    await responder_evento(
+                        interaction,
+                        self.evento_id,
+                        (
+                            "✅ Você já está na PT. Sua posição está reservada.\n\n"
+                            "🎯 Escolha sua classe:"
+                        ),
+                        view=ClasseView(
+                            self.evento_id,
+                            user_id,
+                            "presente"
+                        ),
+                        ephemeral=True
+                    )
+                else:
+                    await responder_evento(
+                        interaction,
+                        self.evento_id,
+                        "⚠️ Você já está confirmado neste evento.",
+                        ephemeral=True,
+                        delete_after=5
+                    )
                 return
 
             # Quem estava como NÃO VOU volta mantendo a classe.
@@ -1824,15 +1865,53 @@ class EventoButton(discord.ui.Button):
                 await atualizar_mensagem(self.evento_id, interaction.channel)
                 return
 
-            await responder_evento(interaction, self.evento_id, 
-                "Selecione sua classe:",
+            # A posição na PT é reservada no momento em que o usuário
+            # clica em "Marcar Presença", antes de escolher a classe.
+            # Assim, o tempo gasto escolhendo a classe não altera a ordem
+            # de confirmação.
+            pt_atual, _ = separar_participantes(evento)
+            if len(pt_atual) >= LIMITE_PT:
+                await responder_evento(
+                    interaction,
+                    self.evento_id,
+                    (
+                        "⚠️ A **PT já está cheia (12/12)**.\n\n"
+                        "🟡 Entre na **Reserva** para ficar na fila."
+                    ),
+                    ephemeral=True,
+                    delete_after=5
+                )
+                return
+
+            agora = horario_atual()
+            evento.setdefault("presentes", {})[user_id] = {
+                "classe": "Aguardando classe",
+                "horario": agora.isoformat()
+            }
+            evento.setdefault("nao_vou", {}).pop(user_id, None)
+            evento.setdefault("reservas", {}).pop(user_id, None)
+            salvar_eventos()
+
+            await atualizar_mensagem(self.evento_id, interaction.channel)
+
+            # A seleção de classe fica disponível por 30 segundos.
+            # Não usamos delete_after aqui, senão o menu sumiria antes
+            # de a pessoa conseguir escolher a classe.
+            await responder_evento(
+                interaction,
+                self.evento_id,
+                (
+                    "✅ **Presença confirmada!** Você já está na PT na posição "
+                    "definida pelo horário do clique.\n\n"
+                    "🎯 Agora escolha sua classe. Sua posição **não será alterada** "
+                    "enquanto você escolhe."
+                ),
                 view=ClasseView(
                     self.evento_id,
                     user_id,
                     "presente"
                 ),
-                ephemeral=True,
-                delete_after=5
+                ephemeral=True
             )
             return
 
