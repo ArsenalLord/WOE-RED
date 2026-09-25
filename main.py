@@ -514,18 +514,65 @@ def encontrar_evento_por_nome_data(nome_evento, data, horario):
 # ============================================================
 
 def normalizar_participante(user_id, dados):
+    """
+    Normaliza o participante e mantém compatibilidade com eventos antigos.
+
+    Novos dados:
+      - classe1: classe da 1ª ida
+      - classe2: classe da 2ª ida (quando houver)
+      - vezes: 1 ou 2
+      - classe: alias da 1ª classe, mantido por compatibilidade
+    """
     if isinstance(dados, dict):
+        classe1 = dados.get("classe1") or dados.get("classe") or "Sem classe"
+        classe2 = dados.get("classe2") or ""
+        try:
+            vezes = int(dados.get("vezes", 2 if classe2 else 1))
+        except (TypeError, ValueError):
+            vezes = 2 if classe2 else 1
+
+        vezes = 2 if vezes >= 2 else 1
+        if vezes == 1:
+            classe2 = ""
+
         return {
             "user_id": str(user_id),
-            "classe": dados.get("classe", "Sem classe"),
+            "classe": classe1,
+            "classe1": classe1,
+            "classe2": classe2,
+            "vezes": vezes,
             "horario": dados.get("horario", "")
         }
 
-    # Compatibilidade com eventos antigos.
+    # Compatibilidade com eventos antigos onde o valor era apenas a classe.
     return {
         "user_id": str(user_id),
         "classe": dados,
+        "classe1": dados,
+        "classe2": "",
+        "vezes": 1,
         "horario": ""
+    }
+
+
+def dados_para_salvar(participante, horario=None, classe1=None, classe2=None, vezes=None):
+    """Converte um participante normalizado para o formato persistido."""
+    p = normalizar_participante(participante.get("user_id", ""), participante)
+    c1 = classe1 if classe1 is not None else p["classe1"]
+    c2 = classe2 if classe2 is not None else p["classe2"]
+    v = vezes if vezes is not None else p["vezes"]
+    try:
+        v = 2 if int(v) >= 2 else 1
+    except (TypeError, ValueError):
+        v = 1
+    if v == 1:
+        c2 = ""
+    return {
+        "classe": c1,
+        "classe1": c1,
+        "classe2": c2,
+        "vezes": v,
+        "horario": horario if horario is not None else p["horario"]
     }
 
 
@@ -637,10 +684,7 @@ def promover_proxima_reserva(evento):
         )
 
         evento.setdefault("reservas", {}).pop(user_id, None)
-        evento.setdefault("presentes", {})[user_id] = {
-            "classe": dados["classe"],
-            "horario": dados["horario"]
-        }
+        evento.setdefault("presentes", {})[user_id] = dados_para_salvar(dados)
 
         salvar_eventos()
 
@@ -669,13 +713,23 @@ def barra_progresso(atual, total):
 
 
 def formatar_participante(participante, numero=None):
-    emoji = emoji_classe(participante["classe"])
+    p = normalizar_participante(participante["user_id"], participante)
+    emoji1 = emoji_classe(p["classe1"])
     prefixo = f"`{numero:02d}` " if numero is not None else ""
 
+    if p["vezes"] >= 2:
+        emoji2 = emoji_classe(p["classe2"]) if p["classe2"] else "❓"
+        classes = (
+            f"**1ª: {p['classe1']}** {emoji1} · "
+            f"**2ª: {p['classe2'] or 'Aguardando classe'}** {emoji2}"
+        )
+    else:
+        classes = f"**1ª: {p['classe1']}** {emoji1} · **1 ida**"
+
     return (
-        f"{prefixo}{emoji} <@{participante['user_id']}> · "
-        f"**{participante['classe']}** · "
-        f"`{formatar_horario(participante['horario'])}`"
+        f"{prefixo}<@{p['user_id']}> · "
+        f"{classes} · "
+        f"`{formatar_horario(p['horario'])}`"
     )
 
 
@@ -1506,6 +1560,61 @@ class ClasseSelect(discord.ui.Select):
         self_user = self.user_id
 
         # ====================================================
+        # SEGUNDA CLASSE / EDIÇÃO DE CLASSES
+        # ====================================================
+        if self.tipo.endswith("_segunda"):
+            grupo = self.tipo[:-8]
+            dados_atuais = evento.get(grupo, {}).get(self_user)
+            if dados_atuais is None:
+                await responder_evento(interaction, self.evento_id, "❌ Sua inscrição não foi encontrada.", delete_after=5)
+                return
+
+            dados_atuais = normalizar_participante(self_user, dados_atuais)
+            evento[grupo][self_user] = dados_para_salvar(
+                dados_atuais,
+                classe2=escolha,
+                vezes=2
+            )
+            salvar_eventos()
+            await atualizar_mensagem(self.evento_id, interaction.channel)
+            await responder_evento(
+                interaction, self.evento_id,
+                f"2️⃣ **2ª classe: {escolha}** registrada com sucesso.",
+                delete_after=5
+            )
+            return
+
+        if self.tipo in ("editar_primeira", "editar_segunda"):
+            grupo = "presentes" if self.tipo.startswith("editar_") else self.tipo.split("_")[0]
+            dados_atuais = evento.get(grupo, {}).get(self_user)
+            if dados_atuais is None:
+                # Tenta localizar em qualquer lista, para inscrições antigas.
+                for g in ("presentes", "reservas", "nao_vou"):
+                    if self_user in evento.get(g, {}):
+                        grupo = g
+                        dados_atuais = evento[g][self_user]
+                        break
+            if dados_atuais is None:
+                await responder_evento(interaction, self.evento_id, "❌ Sua inscrição não foi encontrada.", delete_after=5)
+                return
+
+            dados_atuais = normalizar_participante(self_user, dados_atuais)
+            if self.tipo == "editar_primeira":
+                evento[grupo][self_user] = dados_para_salvar(dados_atuais, classe1=escolha)
+                texto = f"1️⃣ **1ª classe alterada para {escolha}**."
+            else:
+                if dados_atuais["vezes"] < 2:
+                    await responder_evento(interaction, self.evento_id, "⚠️ Você está registrado para apenas 1 ida. Altere para 2 idas primeiro.", delete_after=5)
+                    return
+                evento[grupo][self_user] = dados_para_salvar(dados_atuais, classe2=escolha, vezes=2)
+                texto = f"2️⃣ **2ª classe alterada para {escolha}**."
+
+            salvar_eventos()
+            await atualizar_mensagem(self.evento_id, interaction.channel)
+            await responder_evento(interaction, self.evento_id, texto, delete_after=5)
+            return
+
+        # ====================================================
         # CONFIRMAR PRESENÇA / DEFINIR CLASSE
         # ====================================================
         if self.tipo == "presente":
@@ -1541,20 +1650,18 @@ class ClasseSelect(discord.ui.Select):
             evento.setdefault("nao_vou", {}).pop(self_user, None)
 
             salvar_eventos()
+            await atualizar_mensagem(self.evento_id, interaction.channel)
 
             await responder_evento(
                 interaction,
                 self.evento_id,
                 (
-                    f"✅ Classe **{escolha}** registrada!\n\n"
-                    "📋 Sua posição na PT foi mantida pelo horário em que "
-                    "você marcou presença."
+                    f"✅ **1ª classe: {escolha}** registrada!\n\n"
+                    "📋 Sua posição na PT foi mantida pelo horário do clique.\n"
+                    "🔢 Agora escolha se você vai **1 ou 2 vezes**."
                 ),
-                ephemeral=True,
-                delete_after=5
+                view=IdasView(self.evento_id, self_user, "presente")
             )
-
-            await atualizar_mensagem(self.evento_id, interaction.channel)
             return
 
         # ====================================================
@@ -1587,10 +1694,7 @@ class ClasseSelect(discord.ui.Select):
                 )
 
                 agora = horario_atual()
-                evento.setdefault("reservas", {})[self_user] = {
-                    "classe": classe,
-                    "horario": agora.isoformat()
-                }
+                evento.setdefault("reservas", {})[self_user] = dados_para_salvar(dados, horario=agora.isoformat())
 
                 salvar_eventos()
 
@@ -1627,22 +1731,23 @@ class ClasseSelect(discord.ui.Select):
             evento.setdefault("nao_vou", {}).pop(self_user, None)
             evento.setdefault("reservas", {})[self_user] = {
                 "classe": escolha,
+                "classe1": escolha,
+                "classe2": "",
+                "vezes": 1,
                 "horario": agora.isoformat()
             }
 
             salvar_eventos()
-
-            await responder_evento(interaction, self.evento_id, 
-                (
-                    f"🟡 Você entrou na **RESERVA** como **{escolha}** às "
-                    f"**{agora.strftime('%H:%M')}**.\n\n"
-                    "📋 Você ficará no final da fila de reservas."
-                ),
-                ephemeral=True,
-                delete_after=5
-            )
-
             await atualizar_mensagem(self.evento_id, interaction.channel)
+
+            await responder_evento(
+                interaction, self.evento_id,
+                (
+                    f"🟡 **1ª classe: {escolha}** registrada na reserva.\n\n"
+                    "🔢 Agora escolha se você vai **1 ou 2 vezes**."
+                ),
+                view=IdasView(self.evento_id, self_user, "reserva")
+            )
             return
 
         # ====================================================
@@ -1670,10 +1775,17 @@ class ClasseSelect(discord.ui.Select):
         evento.setdefault("presentes", {}).pop(self_user, None)
         evento.setdefault("reservas", {}).pop(self_user, None)
 
-        evento.setdefault("nao_vou", {})[self_user] = {
-            "classe": classe_final,
-            "horario": agora.isoformat()
-        }
+        evento.setdefault("nao_vou", {})[self_user] = dados_para_salvar(
+            dados_atuais or {
+                "user_id": self_user,
+                "classe": classe_final,
+                "classe1": classe_final,
+                "classe2": "",
+                "vezes": 1,
+                "horario": ""
+            },
+            horario=agora.isoformat()
+        )
 
         salvar_eventos()
 
@@ -1716,6 +1828,161 @@ class ClasseSelect(discord.ui.Select):
             )
 
         await atualizar_mensagem(self.evento_id, interaction.channel)
+
+
+# ============================================================
+# SELEÇÃO DE QUANTIDADE DE IDAS
+# ============================================================
+
+class IdasButton(discord.ui.Button):
+    def __init__(self, evento_id, user_id, tipo_base, vezes):
+        self.evento_id = str(evento_id)
+        self.user_id = str(user_id)
+        self.tipo_base = tipo_base
+        self.vezes = vezes
+
+        super().__init__(
+            label=f"{vezes} vez" if vezes == 1 else f"{vezes} vezes",
+            style=discord.ButtonStyle.green if vezes == 1 else discord.ButtonStyle.blurple,
+            emoji="1️⃣" if vezes == 1 else "2️⃣"
+        )
+
+    async def callback(self, interaction):
+        evento = obter_evento(self.evento_id)
+        if not evento:
+            await responder_evento(interaction, self.evento_id, "❌ Evento não encontrado.", delete_after=5)
+            return
+
+        dados = obter_dados_usuario(evento, self.user_id)
+        if dados is None:
+            await responder_evento(interaction, self.evento_id, "❌ Você não está mais registrado neste evento.", delete_after=5)
+            return
+
+        dados = normalizar_participante(self.user_id, dados)
+        evento_grupo = None
+        for grupo in ("presentes", "reservas", "nao_vou"):
+            if self.user_id in evento.get(grupo, {}):
+                evento_grupo = grupo
+                break
+
+        if not evento_grupo:
+            await responder_evento(interaction, self.evento_id, "❌ Não consegui localizar sua inscrição.", delete_after=5)
+            return
+
+        if self.vezes == 1:
+            evento[evento_grupo][self.user_id] = dados_para_salvar(
+                dados,
+                vezes=1,
+                classe2=""
+            )
+            salvar_eventos()
+            await atualizar_mensagem(self.evento_id, interaction.channel)
+            await responder_evento(
+                interaction, self.evento_id,
+                "1️⃣ **1 ida** registrada. Sua 1ª classe continuará sendo a utilizada.",
+                delete_after=5
+            )
+            return
+
+        # 2 idas: primeiro registra a quantidade e depois pede a 2ª classe.
+        evento[evento_grupo][self.user_id] = dados_para_salvar(
+            dados,
+            vezes=2
+        )
+        salvar_eventos()
+        await atualizar_mensagem(self.evento_id, interaction.channel)
+
+        await responder_evento(
+            interaction,
+            self.evento_id,
+            "2️⃣ **2 idas** registradas. Agora escolha a classe da **2ª ida**:",
+            view=ClasseView(self.evento_id, self.user_id, f"{evento_grupo}_segunda"),
+        )
+
+
+class IdasView(discord.ui.View):
+    def __init__(self, evento_id, user_id, tipo_base):
+        super().__init__(timeout=60)
+        self.add_item(IdasButton(evento_id, user_id, tipo_base, 1))
+        self.add_item(IdasButton(evento_id, user_id, tipo_base, 2))
+
+
+# ============================================================
+# ALTERAR CLASSES / IDAS
+# ============================================================
+
+class AlterarButton(discord.ui.Button):
+    def __init__(self, evento_id, user_id, acao, label, emoji, style=discord.ButtonStyle.blurple):
+        self.evento_id = str(evento_id)
+        self.user_id = str(user_id)
+        self.acao = acao
+        super().__init__(label=label, emoji=emoji, style=style)
+
+    async def callback(self, interaction):
+        evento = obter_evento(self.evento_id)
+        if not evento:
+            await responder_evento(interaction, self.evento_id, "❌ Evento não encontrado.", delete_after=5)
+            return
+
+        dados = obter_dados_usuario(evento, self.user_id)
+        if dados is None:
+            await responder_evento(interaction, self.evento_id, "❌ Você não está inscrito neste evento.", delete_after=5)
+            return
+
+        if self.acao == "idas":
+            await responder_evento(
+                interaction, self.evento_id,
+                "🔄 Escolha quantas vezes você vai:",
+                view=IdasView(self.evento_id, self.user_id, "editar")
+            )
+            return
+
+        tipo = "editar_primeira" if self.acao == "primeira" else "editar_segunda"
+        await responder_evento(
+            interaction, self.evento_id,
+            ("🎯 Escolha a classe da **1ª ida**:" if self.acao == "primeira"
+             else "🎯 Escolha a classe da **2ª ida**:"),
+            view=ClasseView(self.evento_id, self.user_id, tipo)
+        )
+
+
+class AlterarClassesView(discord.ui.View):
+    def __init__(self, evento_id, user_id, dados):
+        super().__init__(timeout=60)
+        self.add_item(AlterarButton(evento_id, user_id, "primeira", "Alterar 1ª classe", "1️⃣"))
+        if dados["vezes"] >= 2:
+            self.add_item(AlterarButton(evento_id, user_id, "segunda", "Alterar 2ª classe", "2️⃣"))
+        self.add_item(AlterarButton(evento_id, user_id, "idas", "Alterar nº de idas", "🔄"))
+
+
+class AlterarClassesButton(discord.ui.Button):
+    def __init__(self, evento_id):
+        self.evento_id = str(evento_id)
+        super().__init__(
+            label="Alterar Idas/Classes",
+            style=discord.ButtonStyle.gray,
+            emoji="⚙️",
+            custom_id=f"evento:{self.evento_id}:alterar"
+        )
+
+    async def callback(self, interaction):
+        evento = obter_evento(self.evento_id)
+        if not evento:
+            await responder_evento(interaction, self.evento_id, "❌ Este evento não existe mais.", delete_after=5)
+            return
+
+        user_id = str(interaction.user.id)
+        dados = obter_dados_usuario(evento, user_id)
+        if dados is None:
+            await responder_evento(interaction, self.evento_id, "⚠️ Você ainda não está inscrito neste evento.", delete_after=5)
+            return
+
+        dados = normalizar_participante(user_id, dados)
+        await responder_evento(
+            interaction, self.evento_id,
+            "⚙️ **Alterar sua inscrição**\nEscolha o que deseja mudar:",
+            view=AlterarClassesView(self.evento_id, user_id, dados)
+        )
 
 
 # ============================================================
@@ -1812,10 +2079,7 @@ class EventoButton(discord.ui.Button):
 
                 evento.setdefault("nao_vou", {}).pop(user_id, None)
                 evento.setdefault("reservas", {}).pop(user_id, None)
-                evento.setdefault("presentes", {})[user_id] = {
-                    "classe": classe,
-                    "horario": agora.isoformat()
-                }
+                evento.setdefault("presentes", {})[user_id] = dados_para_salvar(dados, horario=agora.isoformat())
 
                 salvar_eventos()
 
@@ -1842,10 +2106,7 @@ class EventoButton(discord.ui.Button):
                 agora = horario_atual()
 
                 evento.setdefault("reservas", {}).pop(user_id, None)
-                evento.setdefault("presentes", {})[user_id] = {
-                    "classe": classe,
-                    "horario": agora.isoformat()
-                }
+                evento.setdefault("presentes", {})[user_id] = dados_para_salvar(dados, horario=agora.isoformat())
 
                 salvar_eventos()
 
@@ -1882,6 +2143,9 @@ class EventoButton(discord.ui.Button):
             agora = horario_atual()
             evento.setdefault("presentes", {})[user_id] = {
                 "classe": "Aguardando classe",
+                "classe1": "Aguardando classe",
+                "classe2": "",
+                "vezes": 1,
                 "horario": agora.isoformat()
             }
             evento.setdefault("nao_vou", {}).pop(user_id, None)
@@ -1936,10 +2200,10 @@ class EventoButton(discord.ui.Button):
                 )
 
                 agora = horario_atual()
-                evento.setdefault("reservas", {})[user_id] = {
-                    "classe": classe,
-                    "horario": agora.isoformat()
-                }
+                evento.setdefault("reservas", {})[user_id] = dados_para_salvar(
+                    dados,
+                    horario=agora.isoformat()
+                )
 
                 salvar_eventos()
 
@@ -1982,10 +2246,10 @@ class EventoButton(discord.ui.Button):
                 agora = horario_atual()
 
                 evento.setdefault("nao_vou", {}).pop(user_id, None)
-                evento.setdefault("reservas", {})[user_id] = {
-                    "classe": classe,
-                    "horario": agora.isoformat()
-                }
+                evento.setdefault("reservas", {})[user_id] = dados_para_salvar(
+                    dados,
+                    horario=agora.isoformat()
+                )
 
                 salvar_eventos()
 
@@ -2057,10 +2321,10 @@ class EventoButton(discord.ui.Button):
 
         evento.setdefault("presentes", {}).pop(user_id, None)
         evento.setdefault("reservas", {}).pop(user_id, None)
-        evento.setdefault("nao_vou", {})[user_id] = {
-            "classe": classe,
-            "horario": agora.isoformat()
-        }
+        evento.setdefault("nao_vou", {})[user_id] = dados_para_salvar(
+            dados,
+            horario=agora.isoformat()
+        )
 
         salvar_eventos()
 
@@ -2144,6 +2408,8 @@ class PresencaView(discord.ui.View):
                 "❌"
             )
         )
+
+        self.add_item(AlterarClassesButton(evento_id))
 
 
 # ============================================================
